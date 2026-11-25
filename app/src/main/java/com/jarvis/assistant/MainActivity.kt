@@ -3,21 +3,24 @@ package com.jarvis.assistant
 import android.Manifest
 import android.accessibilityservice.AccessibilityService
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
+import android.graphics.Color
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Bundle
 import android.provider.ContactsContract
 import android.provider.Settings
-import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.telecom.TelecomManager
 import android.widget.Button
+import android.widget.EditText
 import android.widget.TextView
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -27,8 +30,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private lateinit var statusText: TextView
     private lateinit var micButton: Button
+    private lateinit var accessibilityBtn: Button
+    private lateinit var commandEditText: EditText
+    private lateinit var sendCmdBtn: Button
     private lateinit var tts: TextToSpeech
-    private lateinit var speechRecognizer: SpeechRecognizer
 
     private val requiredPermissions = arrayOf(
         Manifest.permission.RECORD_AUDIO,
@@ -38,25 +43,81 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         Manifest.permission.READ_CONTACTS
     )
 
+    private val speechLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val matches = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+            val command = matches?.firstOrNull()?.lowercase(Locale.getDefault()) ?: ""
+            if (command.isNotEmpty()) {
+                processCommand(command)
+            } else {
+                statusText.text = "Didn't catch that. Tap SPEAK again."
+            }
+        } else {
+            statusText.text = "Voice cancelled. Tap SPEAK or type below."
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
         statusText = findViewById(R.id.statusText)
         micButton = findViewById(R.id.micButton)
-        val accessibilityBtn = findViewById<Button>(R.id.accessibilityBtn)
+        accessibilityBtn = findViewById(R.id.accessibilityBtn)
+        commandEditText = findViewById(R.id.commandEditText)
+        sendCmdBtn = findViewById(R.id.sendCmdBtn)
 
         tts = TextToSpeech(this, this)
-        setupSpeechRecognizer()
         requestNeededPermissions()
 
         micButton.setOnClickListener {
-            startListening()
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                ActivityCompat.requestPermissions(
+                    this,
+                    arrayOf(Manifest.permission.RECORD_AUDIO),
+                    102
+                )
+            } else {
+                startListening()
+            }
+        }
+
+        sendCmdBtn.setOnClickListener {
+            val typed = commandEditText.text.toString().trim().lowercase(Locale.getDefault())
+            if (typed.isNotEmpty()) {
+                commandEditText.text.clear()
+                processCommand(typed)
+            }
         }
 
         accessibilityBtn.setOnClickListener {
-            speak("Opening accessibility settings. Please turn on J.A.R.V.I.S., sir.")
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            if (JarvisAccessibilityService.instance != null) {
+                speak("System control is already active, sir.")
+            } else {
+                speak("Opening accessibility settings. Please turn on J.A.R.V.I.S., sir.")
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        updateAccessibilityButtonState()
+    }
+
+    private fun updateAccessibilityButtonState() {
+        if (JarvisAccessibilityService.instance != null) {
+            accessibilityBtn.text = "System Control: ACTIVE"
+            accessibilityBtn.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#0D4735"))
+            accessibilityBtn.setTextColor(Color.parseColor("#69F0AE"))
+        } else {
+            accessibilityBtn.text = "Enable System Control (Accessibility)"
+            accessibilityBtn.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#10253F"))
+            accessibilityBtn.setTextColor(Color.parseColor("#00F0FF"))
         }
     }
 
@@ -81,38 +142,17 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         tts.speak(message, TextToSpeech.QUEUE_FLUSH, null, "JARVIS_ID")
     }
 
-    private fun setupSpeechRecognizer() {
-        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
-        speechRecognizer.setRecognitionListener(object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) {
-                statusText.text = "Listening, sir..."
-            }
-            override fun onResults(results: Bundle?) {
-                val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                val command = matches?.firstOrNull()?.lowercase(Locale.getDefault()) ?: ""
-                if (command.isNotEmpty()) {
-                    processCommand(command)
-                }
-            }
-            override fun onError(error: Int) {
-                statusText.text = "Didn't catch that. Tap SPEAK again."
-            }
-            override fun onBeginningOfSpeech() {}
-            override fun onRmsChanged(rmsdB: Float) {}
-            override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onEndOfSpeech() {}
-            override fun onPartialResults(partialResults: Bundle?) {}
-            override fun onEvent(eventType: Int, params: Bundle?) {}
-        })
-    }
-
     private fun startListening() {
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-IN")
-            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak to J.A.R.V.I.S.")
         }
-        speechRecognizer.startListening(intent)
+        try {
+            speechLauncher.launch(intent)
+        } catch (e: Exception) {
+            speak("Voice service not available on this tablet. Please type your command below, sir.")
+        }
     }
 
     private fun processCommand(cmd: String) {
@@ -139,15 +179,27 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 speak("Sir, battery is at $level percent.")
             }
             cmd.contains("go home") || cmd.contains("home screen") -> {
-                JarvisAccessibilityService.instance?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
-                speak("Going to home screen, sir.")
+                if (JarvisAccessibilityService.instance != null) {
+                    JarvisAccessibilityService.instance?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
+                    speak("Going to home screen, sir.")
+                } else {
+                    speak("Please enable J.A.R.V.I.S. in Accessibility settings first, sir.")
+                }
             }
             cmd.contains("go back") || cmd.contains("back") -> {
-                JarvisAccessibilityService.instance?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+                if (JarvisAccessibilityService.instance != null) {
+                    JarvisAccessibilityService.instance?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+                } else {
+                    speak("Please enable J.A.R.V.I.S. in Accessibility settings first, sir.")
+                }
             }
             cmd.contains("notifications") -> {
-                JarvisAccessibilityService.instance?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS)
-                speak("Opening notifications, sir.")
+                if (JarvisAccessibilityService.instance != null) {
+                    JarvisAccessibilityService.instance?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS)
+                    speak("Opening notifications, sir.")
+                } else {
+                    speak("Please enable J.A.R.V.I.S. in Accessibility settings first, sir.")
+                }
             }
             else -> {
                 speak("Sir, you said $cmd. Try saying Open YouTube, Call Mom, Answer call, or Battery status.")
@@ -176,6 +228,14 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun callContactByName(targetName: String) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED
+        ) {
+            speak("Sir, please allow Contacts and Phone permissions first.")
+            requestNeededPermissions()
+            return
+        }
+
         val cursor = contentResolver.query(
             ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
             arrayOf(
@@ -225,6 +285,5 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     override fun onDestroy() {
         super.onDestroy()
         tts.shutdown()
-        speechRecognizer.destroy()
     }
 }
