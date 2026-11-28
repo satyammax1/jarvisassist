@@ -4,6 +4,7 @@ import android.Manifest
 import android.accessibilityservice.AccessibilityService
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.NotificationManager
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
@@ -13,10 +14,12 @@ import android.graphics.Color
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.media.AudioManager
+import android.media.ToneGenerator
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
+import android.os.CountDownTimer
 import android.os.Handler
 import android.os.Looper
 import android.provider.AlarmClock
@@ -39,6 +42,7 @@ import androidx.core.content.ContextCompat
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
+import org.json.JSONArray
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -49,6 +53,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private lateinit var statusText: TextView
     private lateinit var micButton: Button
     private lateinit var stopSpeakBtn: Button
+    private lateinit var wakeWordBtn: Button
     private lateinit var pdfFolderBtn: Button
     private lateinit var floatingBubbleBtn: Button
     private lateinit var accessibilityBtn: Button
@@ -58,8 +63,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private var speechRecognizer: SpeechRecognizer? = null
     private var isLiveMode = false
+    private var isWakeWordMode = false
     private var isListeningNow = false
     private var activeQuizAnswer: String? = null
+    private var focusTimer: CountDownTimer? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private val requiredPermissions = buildList {
@@ -116,6 +123,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         statusText = findViewById(R.id.statusText)
         micButton = findViewById(R.id.micButton)
         stopSpeakBtn = findViewById(R.id.stopSpeakBtn)
+        wakeWordBtn = findViewById(R.id.wakeWordBtn)
         pdfFolderBtn = findViewById(R.id.pdfFolderBtn)
         floatingBubbleBtn = findViewById(R.id.floatingBubbleBtn)
         accessibilityBtn = findViewById(R.id.accessibilityBtn)
@@ -137,14 +145,38 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             if (isLiveMode) {
                 stopLiveMode("लाइव मोड बंद कर दिया गया है, सर।")
             } else {
+                isWakeWordMode = false
                 isLiveMode = true
                 updateMicButtonUI()
+                updateWakeWordButtonState()
                 speak("लाइव मोड चालू है सर, बोलिए।")
+            }
+        }
+
+        wakeWordBtn.setOnClickListener {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), 102)
+                return@setOnClickListener
+            }
+            if (isWakeWordMode) {
+                isWakeWordMode = false
+                stopLiveMode("हे जार्विस मोड बंद कर दिया गया है, सर।")
+                updateWakeWordButtonState()
+            } else {
+                isLiveMode = false
+                isWakeWordMode = true
+                updateMicButtonUI()
+                updateWakeWordButtonState()
+                speak("हे जार्विस मोड चालू है, सर। जब काम हो तो Hey Jarvis बोलें।")
             }
         }
 
         stopSpeakBtn.setOnClickListener {
             activeQuizAnswer = null
+            isWakeWordMode = false
+            updateWakeWordButtonState()
             stopLiveMode("बोलना और सुनना बंद कर दिया गया है, सर।")
         }
 
@@ -158,7 +190,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         pdfFolderBtn.setOnClickListener {
             isLiveMode = false
+            isWakeWordMode = false
             updateMicButtonUI()
+            updateWakeWordButtonState()
             speak("कृपया वह फोल्डर चुनें जहाँ आपकी पीडीएफ किताबें रखी हैं।")
             val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
@@ -166,9 +200,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             folderPickerLauncher.launch(intent)
         }
 
-        floatingBubbleBtn.setOnClickListener {
-            toggleFloatingBubble()
-        }
+        floatingBubbleBtn.setOnClickListener { toggleFloatingBubble() }
 
         accessibilityBtn.setOnClickListener {
             if (JarvisAccessibilityService.instance != null) {
@@ -183,7 +215,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         if (intent.getBooleanExtra("EXTRA_START_LIVE", false)) {
+            isWakeWordMode = false
             isLiveMode = true
+            updateWakeWordButtonState()
             updateMicButtonUI()
             speak("जी सर, बोलिए।")
         }
@@ -194,6 +228,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         updateAccessibilityButtonState()
         updatePdfFolderButtonState()
         updateFloatingBubbleButtonState()
+        updateWakeWordButtonState()
         updateMicButtonUI()
     }
 
@@ -208,11 +243,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun toggleFloatingBubble() {
         if (!Settings.canDrawOverlays(this)) {
             speak("कृपया जार्विस को स्क्रीन के ऊपर दिखने की परमिशन दें, सर।")
-            val overlayIntent = Intent(
-                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                Uri.parse("package:$packageName")
+            startActivity(
+                Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
             )
-            startActivity(overlayIntent)
             return
         }
 
@@ -231,13 +264,25 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         mainHandler.postDelayed({ updateFloatingBubbleButtonState() }, 300)
     }
 
+    private fun updateWakeWordButtonState() {
+        if (isWakeWordMode) {
+            wakeWordBtn.text = "Hey Jarvis: ON"
+            wakeWordBtn.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#0D4735"))
+            wakeWordBtn.setTextColor(Color.parseColor("#69F0AE"))
+        } else {
+            wakeWordBtn.text = "Hey Jarvis: OFF"
+            wakeWordBtn.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#10253F"))
+            wakeWordBtn.setTextColor(Color.parseColor("#00F0FF"))
+        }
+    }
+
     private fun updateFloatingBubbleButtonState() {
         if (FloatingJarvisService.isRunning) {
-            floatingBubbleBtn.text = "Floating Bubble: ON (Tap to Hide)"
+            floatingBubbleBtn.text = "Bubble: ON"
             floatingBubbleBtn.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#0D4735"))
             floatingBubbleBtn.setTextColor(Color.parseColor("#69F0AE"))
         } else {
-            floatingBubbleBtn.text = "Floating Bubble: OFF"
+            floatingBubbleBtn.text = "Bubble: OFF"
             floatingBubbleBtn.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#10253F"))
             floatingBubbleBtn.setTextColor(Color.parseColor("#00F0FF"))
         }
@@ -274,16 +319,46 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             override fun onReadyForSpeech(params: Bundle?) {
                 isListeningNow = true
                 updateMicButtonUI()
-                statusText.text = "सुन रहा हूँ, सर... बोलिए"
+                if (isWakeWordMode && !isLiveMode) {
+                    statusText.text = "स्टैंडबाय: 'Hey Jarvis' बोलें..."
+                } else {
+                    statusText.text = "सुन रहा हूँ, सर... बोलिए"
+                }
             }
 
             override fun onResults(results: Bundle?) {
                 isListeningNow = false
                 updateMicButtonUI()
                 val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                val command = matches?.firstOrNull()?.lowercase(Locale.getDefault()) ?: ""
-                if (command.isNotEmpty()) {
-                    processCommand(command)
+                val heard = matches?.firstOrNull()?.lowercase(Locale.getDefault()) ?: ""
+
+                if (isWakeWordMode && !isLiveMode) {
+                    if (heard.contains("jarvis") || heard.contains("जार्विस")) {
+                        try {
+                            ToneGenerator(AudioManager.STREAM_MUSIC, 80)
+                                .startTone(ToneGenerator.TONE_PROP_BEEP, 150)
+                        } catch (_: Exception) {}
+                        val afterWake = heard
+                            .replace("hey jarvis", "")
+                            .replace("jarvis", "")
+                            .replace("हे जार्विस", "")
+                            .replace("जार्विस", "")
+                            .trim()
+                        isLiveMode = true
+                        updateMicButtonUI()
+                        if (afterWake.length > 2) {
+                            processCommand(afterWake)
+                        } else {
+                            speak("जी सर, बोलिए।")
+                        }
+                    } else {
+                        scheduleNextListen(400)
+                    }
+                    return
+                }
+
+                if (heard.isNotEmpty()) {
+                    processCommand(heard)
                 } else if (isLiveMode) {
                     scheduleNextListen(400)
                 }
@@ -292,7 +367,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             override fun onError(error: Int) {
                 isListeningNow = false
                 updateMicButtonUI()
-                if (!isLiveMode) return
+                if (!isLiveMode && !isWakeWordMode) return
 
                 when (error) {
                     SpeechRecognizer.ERROR_NO_MATCH,
@@ -302,7 +377,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     SpeechRecognizer.ERROR_NETWORK_TIMEOUT,
                     SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> {
                         isLiveMode = false
+                        isWakeWordMode = false
                         updateMicButtonUI()
+                        updateWakeWordButtonState()
                         speak("सर, ऑफलाइन वॉइस पैक या इंटरनेट चेक करें।")
                     }
                     else -> scheduleNextListen(700)
@@ -322,10 +399,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun scheduleNextListen(delayMs: Long) {
-        if (!isLiveMode) return
+        if (!isLiveMode && !isWakeWordMode) return
         mainHandler.removeCallbacksAndMessages(null)
         mainHandler.postDelayed({
-            if (isLiveMode && !tts.isSpeaking) {
+            if ((isLiveMode || isWakeWordMode) && !tts.isSpeaking) {
                 startSilentListening()
             }
         }, delayMs)
@@ -354,7 +431,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             speechRecognizer?.startListening(intent)
         } catch (_: Exception) {
             isLiveMode = false
+            isWakeWordMode = false
             updateMicButtonUI()
+            updateWakeWordButtonState()
         }
     }
 
@@ -405,13 +484,13 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 override fun onStart(utteranceId: String?) {}
                 override fun onDone(utteranceId: String?) {
                     runOnUiThread {
-                        if (isLiveMode) scheduleNextListen(350)
+                        if (isLiveMode || isWakeWordMode) scheduleNextListen(350)
                     }
                 }
                 @Deprecated("Deprecated in Java")
                 override fun onError(utteranceId: String?) {
                     runOnUiThread {
-                        if (isLiveMode) scheduleNextListen(500)
+                        if (isLiveMode || isWakeWordMode) scheduleNextListen(500)
                     }
                 }
             })
@@ -439,7 +518,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun processCommand(cmd: String) {
         statusText.text = "आपने कहा: \"$cmd\""
 
-        // Check if user is answering an active Quiz question
         val pendingAns = activeQuizAnswer
         if (pendingAns != null && !cmd.contains("stop") && !cmd.contains("quiz")) {
             activeQuizAnswer = null
@@ -455,36 +533,76 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             cmd.contains("stop") || cmd.contains("chup") || cmd.contains("ruk") ||
             cmd.contains("चुप") || cmd.contains("रुक") || cmd.contains("स्टॉप") -> {
                 activeQuizAnswer = null
+                isWakeWordMode = false
+                updateWakeWordButtonState()
                 stopLiveMode("बोलना और लाइव मोड बंद कर दिया गया है, सर।")
             }
 
-            // Study Quiz Mode from PDF
-            cmd.contains("quiz") || cmd.contains("test lo") || cmd.contains("सवाल पूछो") -> {
-                startPdfQuiz(cmd)
+            // Feature 1: Hey Jarvis Wake Word Voice Toggle
+            cmd.contains("wake word") || cmd.contains("हे जार्विस चालू") -> {
+                isLiveMode = false
+                isWakeWordMode = true
+                updateMicButtonUI()
+                updateWakeWordButtonState()
+                speak("हे जार्विस स्टैंडबाय मोड चालू है, सर।")
             }
 
-            // Floating Bubble voice command
-            cmd.contains("floating") || cmd.contains("bubble") -> {
-                toggleFloatingBubble()
+            // Feature 2: Screen Reader (Accessibility)
+            cmd.contains("read screen") || cmd.contains("screen padho") || cmd.contains("स्क्रीन पढ़ो") -> {
+                val svc = JarvisAccessibilityService.instance
+                if (svc == null) {
+                    speak("स्क्रीन पढ़ने के लिए कृपया पहले एक्सेसिबिलिटी में जार्विस को चालू करें।")
+                } else {
+                    val screenText = svc.readCurrentScreenText()
+                    if (screenText.isEmpty()) {
+                        speak("सर, अभी स्क्रीन पर कोई पढ़ने लायक टेक्स्ट नहीं मिला।")
+                    } else {
+                        speak("स्क्रीन पर लिखा है: ${screenText.take(650)}")
+                    }
+                }
             }
 
-            cmd.startsWith("ask ") || cmd.startsWith("search ") || cmd.contains("ढूंढो") -> {
-                handlePdfTopicSearch(cmd)
+            // Feature 3: Voice Study Notes & To-Do List
+            cmd.startsWith("note save") || cmd.startsWith("save note") || cmd.startsWith("note likho") ||
+            cmd.contains("नोट लिखो") || cmd.contains("नोट सेव") -> {
+                val noteContent = cmd
+                    .replace("note save karo", "").replace("save note", "")
+                    .replace("note likho", "").replace("नोट सेव करो", "")
+                    .replace("नोट लिखो", "").replace(":", "").trim()
+                saveVoiceNote(noteContent)
+            }
+            cmd.contains("clear notes") || cmd.contains("delete notes") || cmd.contains("नोट्स मिटाओ") -> {
+                clearVoiceNotes()
+            }
+            cmd.contains("read notes") || cmd.contains("my notes") || cmd.contains("mere notes") ||
+            cmd.contains("नोट्स सुनाओ") || cmd.contains("नोट्स पढ़ो") -> {
+                readSavedNotes()
             }
 
-            cmd.startsWith("read ") || cmd.contains("पढ़ो") || cmd.contains("सुनाओ") -> {
-                handlePdfReadAloud(cmd)
+            // Feature 4: Pomodoro Focus Mode (DND + 25 min timer)
+            cmd.contains("focus mode off") || cmd.contains("फोकस मोड बंद") -> toggleFocusMode(false)
+            cmd.contains("focus mode") || cmd.contains("study mode") || cmd.contains("फोकस मोड") -> toggleFocusMode(true)
+
+            // Feature 5: Offline Calculator & Unit Converter
+            tryCalculateOrConvert(cmd) != null -> {
+                speak(tryCalculateOrConvert(cmd)!!)
             }
 
+            // Quiz Mode
+            cmd.contains("quiz") || cmd.contains("test lo") || cmd.contains("सवाल पूछो") -> startPdfQuiz(cmd)
+
+            // Floating Bubble
+            cmd.contains("floating") || cmd.contains("bubble") -> toggleFloatingBubble()
+
+            // PDF Search / Read / List / Open
+            cmd.startsWith("ask ") || cmd.startsWith("search ") || cmd.contains("ढूंढो") -> handlePdfTopicSearch(cmd)
+            cmd.startsWith("read ") || cmd.contains("पढ़ो") || cmd.contains("सुनाओ") -> handlePdfReadAloud(cmd)
             cmd.contains("list pdf") || cmd.contains("pdf list") || cmd.contains("book list") ||
-            cmd.contains("कौन सी किताब") -> {
-                listSavedPdfs()
-            }
+            cmd.contains("कौन सी किताब") -> listSavedPdfs()
             cmd.contains("pdf") || cmd.contains("book") || cmd.contains("बुक") ||
-            cmd.contains("पीडीएफ") || cmd.contains("किताब") -> {
-                openPdfByName(extractBookQuery(cmd))
-            }
+            cmd.contains("पीडीएफ") || cmd.contains("किताब") -> openPdfByName(extractBookQuery(cmd))
 
+            // Time & Date
             cmd.contains("time") || cmd.contains("समय") || cmd.contains("बजे") -> {
                 val now = SimpleDateFormat("hh:mm a", Locale("en", "IN")).format(Date())
                 speak("सर, अभी $now हुए हैं।")
@@ -494,6 +612,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 speak("सर, आज $today है।")
             }
 
+            // Timer & Alarm
             cmd.contains("timer") || cmd.contains("टाइमर") -> {
                 val mins = Regex("\\d+").find(cmd)?.value?.toIntOrNull() ?: 10
                 setStudyTimer(mins)
@@ -503,13 +622,14 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 setQuickAlarm(hour)
             }
 
+            // Torch & Volume
             cmd.contains("torch on") || cmd.contains("flashlight on") || cmd.contains("टॉर्च चालू") -> toggleTorch(true)
             cmd.contains("torch off") || cmd.contains("flashlight off") || cmd.contains("टॉर्च बंद") -> toggleTorch(false)
-
             cmd.contains("volume up") || cmd.contains("आवाज बढ़ाओ") -> adjustVolume(AudioManager.ADJUST_RAISE)
             cmd.contains("volume down") || cmd.contains("आवाज कम") -> adjustVolume(AudioManager.ADJUST_LOWER)
             cmd.contains("mute") || cmd.contains("साइलेंट") -> adjustVolume(AudioManager.ADJUST_MUTE)
 
+            // Wi-Fi & Bluetooth
             cmd.contains("wifi") || cmd.contains("wi-fi") || cmd.contains("वाईफाई") -> {
                 speak("वाई-फाई सेटिंग्स खोल रहा हूँ, सर।")
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -523,6 +643,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
             }
 
+            // Calls
             cmd.contains("receive call") || cmd.contains("answer call") || cmd.contains("pick up") ||
             cmd.contains("call uthao") || cmd.contains("कॉल उठाओ") || cmd.contains("फोन उठाओ") -> {
                 isLiveMode = false
@@ -544,18 +665,21 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 callContactByName(name)
             }
 
+            // Open App or PDF
             cmd.startsWith("open ") -> openAppOrPdfFallback(cmd.removePrefix("open ").trim())
             cmd.contains("खोलो") || cmd.contains("kholo") -> {
                 val target = cmd.replace("खोलो", "").replace("kholo", "").replace("karo", "").trim()
                 openAppOrPdfFallback(target)
             }
 
+            // Battery
             cmd.contains("battery") || cmd.contains("बैटरी") -> {
                 val bm = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
                 val level = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
                 speak("सर, आपके टैबलेट की बैटरी $level प्रतिशत है।")
             }
 
+            // Navigation
             cmd.contains("go home") || cmd.contains("home screen") || cmd.contains("होम") -> {
                 if (JarvisAccessibilityService.instance != null) {
                     JarvisAccessibilityService.instance?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
@@ -581,9 +705,125 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 }
             }
             else -> {
-                speak("सर, आपने कहा $cmd। आप 'quiz', 'theory of machines book open karo', या 'battery status' बोल सकते हैं।")
+                speak("सर, आपने कहा $cmd। आप 'focus mode on', '250 ka 18 percent', 'save note', या 'read screen' बोल सकते हैं।")
             }
         }
+    }
+
+    // --- Voice Notes ---
+    private fun saveVoiceNote(text: String) {
+        if (text.isBlank()) {
+            speak("सर, नोट में क्या लिखना है वह भी बोलें।")
+            return
+        }
+        val prefs = getSharedPreferences("jarvis_prefs", Context.MODE_PRIVATE)
+        val arr = JSONArray(prefs.getString("voice_notes", "[]"))
+        arr.put(text)
+        prefs.edit().putString("voice_notes", arr.toString()).apply()
+        speak("नोट सेव हो गया है, सर: $text")
+    }
+
+    private fun readSavedNotes() {
+        val prefs = getSharedPreferences("jarvis_prefs", Context.MODE_PRIVATE)
+        val arr = JSONArray(prefs.getString("voice_notes", "[]"))
+        if (arr.length() == 0) {
+            speak("सर, अभी कोई नोट सेव नहीं है।")
+            return
+        }
+        val sb = StringBuilder("सर, आपके ${arr.length()} नोट्स हैं: ")
+        for (i in 0 until arr.length()) {
+            sb.append("${i + 1}: ${arr.getString(i)}. ")
+        }
+        speak(sb.toString())
+    }
+
+    private fun clearVoiceNotes() {
+        getSharedPreferences("jarvis_prefs", Context.MODE_PRIVATE)
+            .edit().putString("voice_notes", "[]").apply()
+        speak("सर, सभी सेव किए हुए नोट्स मिटा दिए गए हैं।")
+    }
+
+    // --- Pomodoro Focus Mode (DND + 25 min timer) ---
+    private fun toggleFocusMode(enable: Boolean) {
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (!nm.isNotificationPolicyAccessGranted) {
+            speak("फोकस मोड के लिए कृपया जार्विस को Do Not Disturb की परमिशन दें, सर।")
+            startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
+            return
+        }
+        focusTimer?.cancel()
+        if (enable) {
+            nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_PRIORITY)
+            speak("फोकस मोड चालू है, सर। 25 मिनट का स्टडी सेशन शुरू हो गया है, कोई नोटिफिकेशन डिस्टर्ब नहीं करेगा।")
+            focusTimer = object : CountDownTimer(25 * 60 * 1000L, 60000L) {
+                override fun onTick(millisUntilFinished: Long) {}
+                override fun onFinish() {
+                    nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL)
+                    speak("सर, आपके 25 मिनट का स्टडी सेशन पूरा हो गया है! अब 5 मिनट का ब्रेक ले लें।")
+                }
+            }.start()
+        } else {
+            nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL)
+            speak("फोकस मोड बंद कर दिया गया है, सर।")
+        }
+    }
+
+    // --- Offline Calculator & Unit Converter ---
+    private fun tryCalculateOrConvert(cmd: String): String? {
+        val nums = Regex("\\d+(?:\\.\\d+)?").findAll(cmd).map { it.value.toDouble() }.toList()
+        if (nums.isEmpty()) return null
+
+        // Percentage: "1250 ka 18 percent" or "18 percent of 1250"
+        if (cmd.contains("percent") || cmd.contains("%") || cmd.contains("प्रतिशत")) {
+            if (nums.size >= 2) {
+                val pct = if (cmd.contains("ka") || cmd.contains("का")) (nums[0] * nums[1]) / 100.0
+                else (nums[0] * nums[1]) / 100.0
+                return "सर, इसका जवाब ${formatNum(pct)} होगा।"
+            }
+        }
+
+        // Unit Conversions
+        val v = nums[0]
+        if (cmd.contains("celsius") && cmd.contains("fahrenheit")) {
+            return if (cmd.indexOf("celsius") < cmd.indexOf("fahrenheit")) {
+                "सर, ${formatNum(v)} डिग्री सेल्सियस बराबर ${formatNum((v * 9.0 / 5.0) + 32.0)} फारेनहाइट होता है।"
+            } else {
+                "सर, ${formatNum(v)} फारेनहाइट बराबर ${formatNum((v - 32.0) * 5.0 / 9.0)} डिग्री सेल्सियस होता है।"
+            }
+        }
+        if ((cmd.contains("km") || cmd.contains("kilometer")) && cmd.contains("mile")) {
+            return "सर, ${formatNum(v)} किलोमीटर बराबर ${formatNum(v * 0.621371)} मील होता है।"
+        }
+        if (cmd.contains("kg") && (cmd.contains("pound") || cmd.contains("lbs"))) {
+            return "सर, ${formatNum(v)} किलोग्राम बराबर ${formatNum(v * 2.20462)} पाउंड होता है।"
+        }
+        if (cmd.contains("inch") && cmd.contains("cm")) {
+            return if (cmd.indexOf("inch") < cmd.indexOf("cm")) {
+                "सर, ${formatNum(v)} इंच बराबर ${formatNum(v * 2.54)} सेंटीमीटर होता है।"
+            } else {
+                "सर, ${formatNum(v)} सेंटीमीटर बराबर ${formatNum(v / 2.54)} इंच होता है।"
+            }
+        }
+
+        // Basic Arithmetic (+, -, *, /)
+        if (nums.size >= 2) {
+            val a = nums[0]
+            val b = nums[1]
+            val res: Double? = when {
+                cmd.contains("+") || cmd.contains("plus") || cmd.contains("जोड़") -> a + b
+                cmd.contains("-") || cmd.contains("minus") || cmd.contains("घटा") -> a - b
+                cmd.contains("*") || cmd.contains("x") || cmd.contains("into") || cmd.contains("multiply") || cmd.contains("गुणा") -> a * b
+                cmd.contains("/") || cmd.contains("divide") || cmd.contains("भाग") -> if (b != 0.0) a / b else null
+                else -> null
+            }
+            if (res != null) return "सर, उत्तर ${formatNum(res)} है।"
+        }
+        return null
+    }
+
+    private fun formatNum(value: Double): String {
+        return if (value % 1.0 == 0.0) value.toLong().toString()
+        else String.format(Locale.US, "%.2f", value)
     }
 
     private fun startPdfQuiz(cmd: String) {
@@ -630,9 +870,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     }
                 }
             } catch (_: Exception) {
-                runOnUiThread {
-                    speak("क्विज बनाने में दिक्कत आई, सर।")
-                }
+                runOnUiThread { speak("क्विज बनाने में दिक्कत आई, सर।") }
             }
         }.start()
     }
@@ -784,9 +1022,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     }
                 }
             } catch (e: Exception) {
-                runOnUiThread {
-                    speak("माफ कीजिए सर, यह पीडीएफ पढ़ने में दिक्कत आई।")
-                }
+                runOnUiThread { speak("माफ कीजिए सर, यह पीडीएफ पढ़ने में दिक्कत आई।") }
             }
         }.start()
     }
@@ -826,9 +1062,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                             val pageText = stripper.getText(doc)
                             val lower = pageText.lowercase(Locale.getDefault())
                             var score = 0
-                            keywords.forEach { kw ->
-                                if (lower.contains(kw)) score += 1
-                            }
+                            keywords.forEach { kw -> if (lower.contains(kw)) score += 1 }
                             if (score > bestScore) {
                                 bestScore = score
                                 bestPage = p
@@ -852,9 +1086,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     }
                 }
             } catch (e: Exception) {
-                runOnUiThread {
-                    speak("पीडीएफ स्कैन करने में समस्या आई, सर।")
-                }
+                runOnUiThread { speak("पीडीएफ स्कैन करने में समस्या आई, सर।") }
             }
         }.start()
     }
@@ -996,6 +1228,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     override fun onDestroy() {
         super.onDestroy()
+        focusTimer?.cancel()
         mainHandler.removeCallbacksAndMessages(null)
         speechRecognizer?.destroy()
         tts.shutdown()
