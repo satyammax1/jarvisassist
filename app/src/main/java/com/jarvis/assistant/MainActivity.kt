@@ -4,6 +4,7 @@ import android.Manifest
 import android.accessibilityservice.AccessibilityService
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -13,6 +14,7 @@ import android.net.Uri
 import android.os.BatteryManager
 import android.os.Bundle
 import android.provider.ContactsContract
+import android.provider.DocumentsContract
 import android.provider.Settings
 import android.speech.RecognizerIntent
 import android.speech.tts.TextToSpeech
@@ -30,6 +32,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private lateinit var statusText: TextView
     private lateinit var micButton: Button
+    private lateinit var pdfFolderBtn: Button
     private lateinit var accessibilityBtn: Button
     private lateinit var commandEditText: EditText
     private lateinit var sendCmdBtn: Button
@@ -59,12 +62,35 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
 
+    private val folderPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val treeUri = result.data?.data ?: return@registerForActivityResult
+            try {
+                contentResolver.takePersistableUriPermission(
+                    treeUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (_: Exception) {}
+
+            getSharedPreferences("jarvis_prefs", Context.MODE_PRIVATE)
+                .edit()
+                .putString("pdf_folder_uri", treeUri.toString())
+                .apply()
+
+            updatePdfFolderButtonState()
+            speak("पीडीएफ फोल्डर सेव हो गया है, सर। अब आप किसी भी किताब का नाम बोलकर उसे खोल सकते हैं।")
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
         statusText = findViewById(R.id.statusText)
         micButton = findViewById(R.id.micButton)
+        pdfFolderBtn = findViewById(R.id.pdfFolderBtn)
         accessibilityBtn = findViewById(R.id.accessibilityBtn)
         commandEditText = findViewById(R.id.commandEditText)
         sendCmdBtn = findViewById(R.id.sendCmdBtn)
@@ -94,6 +120,14 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
         }
 
+        pdfFolderBtn.setOnClickListener {
+            speak("कृपया वह फोल्डर चुनें जहाँ आपकी पीडीएफ किताबें रखी हैं।")
+            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+            }
+            folderPickerLauncher.launch(intent)
+        }
+
         accessibilityBtn.setOnClickListener {
             if (JarvisAccessibilityService.instance != null) {
                 speak("सिस्टम कंट्रोल पहले से चालू है, सर।")
@@ -107,6 +141,21 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     override fun onResume() {
         super.onResume()
         updateAccessibilityButtonState()
+        updatePdfFolderButtonState()
+    }
+
+    private fun updatePdfFolderButtonState() {
+        val savedUri = getSharedPreferences("jarvis_prefs", Context.MODE_PRIVATE)
+            .getString("pdf_folder_uri", null)
+        if (savedUri != null) {
+            pdfFolderBtn.text = "PDF Folder: LINKED (Tap to Change)"
+            pdfFolderBtn.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#0D4735"))
+            pdfFolderBtn.setTextColor(Color.parseColor("#69F0AE"))
+        } else {
+            pdfFolderBtn.text = "Select PDF Folder"
+            pdfFolderBtn.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#10253F"))
+            pdfFolderBtn.setTextColor(Color.parseColor("#00F0FF"))
+        }
     }
 
     private fun updateAccessibilityButtonState() {
@@ -163,6 +212,21 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         statusText.text = "आपने कहा: \"$cmd\""
 
         when {
+            cmd.contains("list pdf") || cmd.contains("pdf list") || cmd.contains("कौन सी किताब") -> {
+                listSavedPdfs()
+            }
+            cmd.contains("pdf") || cmd.contains("पीडीएफ") || cmd.contains("किताब") -> {
+                val cleanName = cmd
+                    .replace("open", "")
+                    .replace("pdf", "")
+                    .replace("पीडीएफ", "")
+                    .replace("किताब", "")
+                    .replace("खोलो", "")
+                    .replace("करो", "")
+                    .replace("को", "")
+                    .trim()
+                openPdfByName(cleanName)
+            }
             cmd.contains("receive call") || cmd.contains("answer call") || cmd.contains("pick up") ||
             cmd.contains("call uthao") || cmd.contains("कॉल उठाओ") || cmd.contains("फोन उठाओ") -> {
                 answerIncomingCall()
@@ -217,8 +281,82 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 }
             }
             else -> {
-                speak("सर, आपने कहा $cmd। आप यूट्यूब खोलो, बैटरी बताओ, या कॉल करो बोल सकते हैं।")
+                speak("सर, आपने कहा $cmd। आप यूट्यूब खोलो, पीडीएफ खोलो, बैटरी बताओ, या कॉल करो बोल सकते हैं।")
             }
+        }
+    }
+
+    private fun getPdfFilesFromLinkedFolder(): List<Pair<String, Uri>>? {
+        val savedUriStr = getSharedPreferences("jarvis_prefs", Context.MODE_PRIVATE)
+            .getString("pdf_folder_uri", null) ?: return null
+
+        val treeUri = Uri.parse(savedUriStr)
+        val docId = DocumentsContract.getTreeDocumentId(treeUri)
+        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, docId)
+        val result = mutableListOf<Pair<String, Uri>>()
+
+        val projection = arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE
+        )
+
+        contentResolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
+            while (cursor.moveToNext()) {
+                val id = cursor.getString(0)
+                val name = cursor.getString(1) ?: ""
+                val mime = cursor.getString(2) ?: ""
+                if (mime == "application/pdf" || name.lowercase(Locale.getDefault()).endsWith(".pdf")) {
+                    val fileUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, id)
+                    result.add(Pair(name, fileUri))
+                }
+            }
+        }
+        return result
+    }
+
+    private fun listSavedPdfs() {
+        val pdfs = getPdfFilesFromLinkedFolder()
+        if (pdfs == null) {
+            speak("सर, कृपया पहले नीचे Select PDF Folder बटन दबाकर अपना फोल्डर चुनें।")
+            return
+        }
+        if (pdfs.isEmpty()) {
+            speak("सर, इस फोल्डर में कोई पीडीएफ फाइल नहीं मिली।")
+            return
+        }
+        val names = pdfs.take(5).joinToString(", ") { it.first.removeSuffix(".pdf") }
+        speak("सर, इस फोल्डर में ${pdfs.size} पीडीएफ फाइलें हैं, जैसे: $names")
+    }
+
+    private fun openPdfByName(query: String) {
+        val pdfs = getPdfFilesFromLinkedFolder()
+        if (pdfs == null) {
+            speak("सर, कृपया पहले Select PDF Folder बटन दबाकर अपना डाउनलोड फोल्डर चुनें।")
+            return
+        }
+        if (query.isEmpty()) {
+            listSavedPdfs()
+            return
+        }
+
+        val match = pdfs.firstOrNull {
+            it.first.lowercase(Locale.getDefault()).contains(query.lowercase(Locale.getDefault()))
+        }
+
+        if (match != null) {
+            speak("${match.first} खोल रहा हूँ, सर।")
+            val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(match.second, "application/pdf")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            try {
+                startActivity(viewIntent)
+            } catch (e: ActivityNotFoundException) {
+                speak("सर, टैबलेट में पीडीएफ खोलने वाला कोई ऐप नहीं मिला। कृपया एक पीडीएफ व्यूअर इंस्टॉल करें।")
+            }
+        } else {
+            speak("माफ कीजिए सर, फोल्डर में $query नाम की कोई पीडीएफ नहीं मिली।")
         }
     }
 
