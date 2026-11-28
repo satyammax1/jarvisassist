@@ -42,6 +42,7 @@ import com.tom_roush.pdfbox.text.PDFTextStripper
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.random.Random
 
 class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
@@ -49,6 +50,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private lateinit var micButton: Button
     private lateinit var stopSpeakBtn: Button
     private lateinit var pdfFolderBtn: Button
+    private lateinit var floatingBubbleBtn: Button
     private lateinit var accessibilityBtn: Button
     private lateinit var commandEditText: EditText
     private lateinit var sendCmdBtn: Button
@@ -57,17 +59,21 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var speechRecognizer: SpeechRecognizer? = null
     private var isLiveMode = false
     private var isListeningNow = false
+    private var activeQuizAnswer: String? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    private val requiredPermissions = arrayOf(
-        Manifest.permission.RECORD_AUDIO,
-        Manifest.permission.CALL_PHONE,
-        Manifest.permission.ANSWER_PHONE_CALLS,
-        Manifest.permission.READ_PHONE_STATE,
-        Manifest.permission.READ_CONTACTS
-    )
+    private val requiredPermissions = buildList {
+        add(Manifest.permission.RECORD_AUDIO)
+        add(Manifest.permission.CALL_PHONE)
+        add(Manifest.permission.ANSWER_PHONE_CALLS)
+        add(Manifest.permission.READ_PHONE_STATE)
+        add(Manifest.permission.READ_CALL_LOG)
+        add(Manifest.permission.READ_CONTACTS)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }.toTypedArray()
 
-    // Fallback popup if silent SpeechRecognizer is unavailable
     private val popupSpeechLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -111,6 +117,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         micButton = findViewById(R.id.micButton)
         stopSpeakBtn = findViewById(R.id.stopSpeakBtn)
         pdfFolderBtn = findViewById(R.id.pdfFolderBtn)
+        floatingBubbleBtn = findViewById(R.id.floatingBubbleBtn)
         accessibilityBtn = findViewById(R.id.accessibilityBtn)
         commandEditText = findViewById(R.id.commandEditText)
         sendCmdBtn = findViewById(R.id.sendCmdBtn)
@@ -123,11 +130,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
                 != PackageManager.PERMISSION_GRANTED
             ) {
-                ActivityCompat.requestPermissions(
-                    this,
-                    arrayOf(Manifest.permission.RECORD_AUDIO),
-                    102
-                )
+                ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), 102)
                 return@setOnClickListener
             }
 
@@ -141,6 +144,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
 
         stopSpeakBtn.setOnClickListener {
+            activeQuizAnswer = null
             stopLiveMode("बोलना और सुनना बंद कर दिया गया है, सर।")
         }
 
@@ -162,6 +166,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             folderPickerLauncher.launch(intent)
         }
 
+        floatingBubbleBtn.setOnClickListener {
+            toggleFloatingBubble()
+        }
+
         accessibilityBtn.setOnClickListener {
             if (JarvisAccessibilityService.instance != null) {
                 speak("सिस्टम कंट्रोल पहले से चालू है, सर।")
@@ -172,10 +180,20 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.getBooleanExtra("EXTRA_START_LIVE", false)) {
+            isLiveMode = true
+            updateMicButtonUI()
+            speak("जी सर, बोलिए।")
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         updateAccessibilityButtonState()
         updatePdfFolderButtonState()
+        updateFloatingBubbleButtonState()
         updateMicButtonUI()
     }
 
@@ -185,6 +203,44 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         try {
             speechRecognizer?.cancel()
         } catch (_: Exception) {}
+    }
+
+    private fun toggleFloatingBubble() {
+        if (!Settings.canDrawOverlays(this)) {
+            speak("कृपया जार्विस को स्क्रीन के ऊपर दिखने की परमिशन दें, सर।")
+            val overlayIntent = Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:$packageName")
+            )
+            startActivity(overlayIntent)
+            return
+        }
+
+        val serviceIntent = Intent(this, FloatingJarvisService::class.java)
+        if (FloatingJarvisService.isRunning) {
+            stopService(serviceIntent)
+            speak("फ्लोटिंग आइकन बंद कर दिया गया है, सर।")
+        } else {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent)
+            } else {
+                startService(serviceIntent)
+            }
+            speak("फ्लोटिंग जार्विस आइकन चालू हो गया है, सर।")
+        }
+        mainHandler.postDelayed({ updateFloatingBubbleButtonState() }, 300)
+    }
+
+    private fun updateFloatingBubbleButtonState() {
+        if (FloatingJarvisService.isRunning) {
+            floatingBubbleBtn.text = "Floating Bubble: ON (Tap to Hide)"
+            floatingBubbleBtn.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#0D4735"))
+            floatingBubbleBtn.setTextColor(Color.parseColor("#69F0AE"))
+        } else {
+            floatingBubbleBtn.text = "Floating Bubble: OFF"
+            floatingBubbleBtn.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#10253F"))
+            floatingBubbleBtn.setTextColor(Color.parseColor("#00F0FF"))
+        }
     }
 
     private fun stopLiveMode(message: String) {
@@ -239,16 +295,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 if (!isLiveMode) return
 
                 when (error) {
-                    // Normal silence or no speech -> keep listening continuously
                     SpeechRecognizer.ERROR_NO_MATCH,
-                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
-                        scheduleNextListen(450)
-                    }
-                    // Recognizer busy -> brief wait and retry
-                    SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> {
-                        scheduleNextListen(900)
-                    }
-                    // Network/offline pack missing -> stop loop and inform user
+                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> scheduleNextListen(450)
+                    SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> scheduleNextListen(900)
                     SpeechRecognizer.ERROR_NETWORK,
                     SpeechRecognizer.ERROR_NETWORK_TIMEOUT,
                     SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> {
@@ -256,9 +305,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                         updateMicButtonUI()
                         speak("सर, ऑफलाइन वॉइस पैक या इंटरनेट चेक करें।")
                     }
-                    else -> {
-                        scheduleNextListen(700)
-                    }
+                    else -> scheduleNextListen(700)
                 }
             }
 
@@ -286,7 +333,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private fun startSilentListening() {
         if (speechRecognizer == null) {
-            // Fallback to popup if silent recognizer not available
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, "hi-IN")
@@ -355,7 +401,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
             tts.setSpeechRate(0.95f)
 
-            // Automatically resume listening right after J.A.R.V.I.S. finishes speaking
             tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) {}
                 override fun onDone(utteranceId: String?) {
@@ -371,12 +416,17 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 }
             })
 
-            speak("नमस्ते सर, मैं जार्विस हूँ। लाइव बात करने के लिए SPEAK दबाएं।")
+            if (intent.getBooleanExtra("EXTRA_START_LIVE", false)) {
+                isLiveMode = true
+                updateMicButtonUI()
+                speak("जी सर, बोलिए।")
+            } else {
+                speak("नमस्ते सर, मैं जार्विस हूँ। लाइव बात करने के लिए SPEAK दबाएं।")
+            }
         }
     }
 
     private fun speak(message: String) {
-        // Pause mic while J.A.R.V.I.S. speaks so it does not hear itself
         isListeningNow = false
         try {
             speechRecognizer?.cancel()
@@ -389,10 +439,33 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun processCommand(cmd: String) {
         statusText.text = "आपने कहा: \"$cmd\""
 
+        // Check if user is answering an active Quiz question
+        val pendingAns = activeQuizAnswer
+        if (pendingAns != null && !cmd.contains("stop") && !cmd.contains("quiz")) {
+            activeQuizAnswer = null
+            if (cmd.contains(pendingAns.lowercase(Locale.getDefault()))) {
+                speak("शाबाश सर! बिल्कुल सही जवाब: $pendingAns। अगला सवाल चाहिए तो quiz बोलें।")
+            } else {
+                speak("सर, आपका जवाब थोड़ा अलग था। सही जवाब '$pendingAns' है। अगला सवाल चाहिए तो quiz बोलें।")
+            }
+            return
+        }
+
         when {
             cmd.contains("stop") || cmd.contains("chup") || cmd.contains("ruk") ||
             cmd.contains("चुप") || cmd.contains("रुक") || cmd.contains("स्टॉप") -> {
+                activeQuizAnswer = null
                 stopLiveMode("बोलना और लाइव मोड बंद कर दिया गया है, सर।")
+            }
+
+            // Study Quiz Mode from PDF
+            cmd.contains("quiz") || cmd.contains("test lo") || cmd.contains("सवाल पूछो") -> {
+                startPdfQuiz(cmd)
+            }
+
+            // Floating Bubble voice command
+            cmd.contains("floating") || cmd.contains("bubble") -> {
+                toggleFloatingBubble()
             }
 
             cmd.startsWith("ask ") || cmd.startsWith("search ") || cmd.contains("ढूंढो") -> {
@@ -508,9 +581,60 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 }
             }
             else -> {
-                speak("सर, आपने कहा $cmd। आप 'theory of machines book open karo', 'list pdf', या 'battery status' बोल सकते हैं।")
+                speak("सर, आपने कहा $cmd। आप 'quiz', 'theory of machines book open karo', या 'battery status' बोल सकते हैं।")
             }
         }
+    }
+
+    private fun startPdfQuiz(cmd: String) {
+        val pdfs = getPdfFilesFromLinkedFolder()
+        if (pdfs == null || pdfs.isEmpty()) {
+            speak("सर, क्विज के लिए पहले Select PDF Folder से अपनी किताबों वाला फोल्डर जोड़ें।")
+            return
+        }
+
+        val cleanQuery = extractBookQuery(cmd.replace("quiz", "").replace("test", "").replace("सवाल", ""))
+        val matchedBook = findBestMatchingPdf(pdfs, cleanQuery) ?: pdfs.first()
+        speak("${matchedBook.first} से आपके लिए सवाल तैयार कर रहा हूँ, सर।")
+
+        Thread {
+            try {
+                contentResolver.openInputStream(matchedBook.second)?.use { stream ->
+                    PDDocument.load(stream).use { doc ->
+                        val randomPage = Random.nextInt(1, doc.numberOfPages + 1)
+                        val stripper = PDFTextStripper().apply {
+                            startPage = randomPage
+                            endPage = randomPage
+                        }
+                        val raw = stripper.getText(doc).replace("\\s+".toRegex(), " ").trim()
+                        val sentences = raw.split(Regex("(?<=[.?!])\\s+"))
+                            .filter { it.length in 45..180 }
+
+                        val chosen = sentences.randomOrNull()
+                        runOnUiThread {
+                            if (chosen == null) {
+                                speak("सर, पेज $randomPage पर कोई अच्छा वाक्य नहीं मिला। एक बार फिर quiz बोलें।")
+                            } else {
+                                val words = chosen.split(" ")
+                                val targetWord = words.filter { it.length >= 6 && it.all { ch -> ch.isLetter() } }
+                                    .maxByOrNull { it.length }
+                                if (targetWord != null) {
+                                    activeQuizAnswer = targetWord
+                                    val blanked = chosen.replaceFirst(targetWord, "खाली स्थान")
+                                    speak("सवाल पेज $randomPage से: $blanked — बताइए खाली स्थान में क्या आएगा?")
+                                } else {
+                                    speak("पेज $randomPage का मुख्य बिंदु सुनिए: $chosen")
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+                runOnUiThread {
+                    speak("क्विज बनाने में दिक्कत आई, सर।")
+                }
+            }
+        }.start()
     }
 
     private fun extractBookQuery(cmd: String): String {
