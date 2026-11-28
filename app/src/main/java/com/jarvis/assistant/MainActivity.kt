@@ -52,10 +52,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             if (command.isNotEmpty()) {
                 processCommand(command)
             } else {
-                statusText.text = "Didn't catch that. Tap SPEAK again."
+                statusText.text = "आवाज़ समझ नहीं आई, फिर से बोलें।"
             }
         } else {
-            statusText.text = "Voice cancelled. Tap SPEAK or type below."
+            statusText.text = "माइक बंद हुआ। SPEAK दबाएं या नीचे टाइप करें।"
         }
     }
 
@@ -96,9 +96,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         accessibilityBtn.setOnClickListener {
             if (JarvisAccessibilityService.instance != null) {
-                speak("System control is already active, sir.")
+                speak("सिस्टम कंट्रोल पहले से चालू है, सर।")
             } else {
-                speak("Opening accessibility settings. Please turn on J.A.R.V.I.S., sir.")
+                speak("एक्सेसिबिलिटी सेटिंग्स खोल रहा हूँ। कृपया जार्विस को चालू करें।")
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             }
         }
@@ -132,8 +132,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
-            tts.language = Locale("en", "IN")
-            speak("J.A.R.V.I.S. online and ready, sir.")
+            val hiResult = tts.setLanguage(Locale("hi", "IN"))
+            if (hiResult == TextToSpeech.LANG_MISSING_DATA || hiResult == TextToSpeech.LANG_NOT_SUPPORTED) {
+                tts.language = Locale("en", "IN")
+            }
+            tts.setSpeechRate(0.95f)
+            speak("नमस्ते सर, मैं जार्विस हूँ। बताइए क्या सेवा करूँ?")
         }
     }
 
@@ -145,64 +149,75 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun startListening() {
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-IN")
-            putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak to J.A.R.V.I.S.")
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "hi-IN")
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "जार्विस को बोलें...")
         }
         try {
             speechLauncher.launch(intent)
         } catch (e: Exception) {
-            speak("Voice service not available on this tablet. Please type your command below, sir.")
+            speak("वॉइस सर्विस उपलब्ध नहीं है, कृपया नीचे टाइप करें।")
         }
     }
 
     private fun processCommand(cmd: String) {
-        statusText.text = "You said: \"$cmd\""
+        statusText.text = "आपने कहा: \"$cmd\""
 
         when {
-            cmd.contains("receive call") || cmd.contains("answer call") || cmd.contains("pick up") || cmd.contains("call uthao") -> {
+            cmd.contains("receive call") || cmd.contains("answer call") || cmd.contains("pick up") ||
+            cmd.contains("call uthao") || cmd.contains("कॉल उठाओ") || cmd.contains("फोन उठाओ") -> {
                 answerIncomingCall()
             }
-            cmd.contains("end call") || cmd.contains("cut call") || cmd.contains("call kato") -> {
+            cmd.contains("end call") || cmd.contains("cut call") || cmd.contains("call kato") ||
+            cmd.contains("कॉल काटो") || cmd.contains("फोन काटो") -> {
                 endActiveCall()
             }
             cmd.startsWith("call ") -> {
                 val name = cmd.removePrefix("call ").trim()
                 callContactByName(name)
             }
+            cmd.contains("कॉल करो") || cmd.contains("फोन करो") -> {
+                val name = cmd.replace("को कॉल करो", "").replace("कॉल करो", "")
+                    .replace("को फोन करो", "").replace("फोन करो", "").trim()
+                callContactByName(name)
+            }
             cmd.startsWith("open ") -> {
                 val appName = cmd.removePrefix("open ").trim()
                 openInstalledApp(appName)
             }
-            cmd.contains("battery") -> {
+            cmd.contains("खोलो") -> {
+                val appName = cmd.replace("खोलो", "").trim()
+                openInstalledApp(appName)
+            }
+            cmd.contains("battery") || cmd.contains("बैटरी") -> {
                 val bm = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
                 val level = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-                speak("Sir, battery is at $level percent.")
+                speak("सर, आपके टैबलेट की बैटरी $level प्रतिशत है।")
             }
-            cmd.contains("go home") || cmd.contains("home screen") -> {
+            cmd.contains("go home") || cmd.contains("home screen") || cmd.contains("होम") -> {
                 if (JarvisAccessibilityService.instance != null) {
                     JarvisAccessibilityService.instance?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
-                    speak("Going to home screen, sir.")
+                    speak("होम स्क्रीन पर जा रहा हूँ, सर।")
                 } else {
-                    speak("Please enable J.A.R.V.I.S. in Accessibility settings first, sir.")
+                    speak("कृपया पहले एक्सेसिबिलिटी में जार्विस को चालू करें।")
                 }
             }
-            cmd.contains("go back") || cmd.contains("back") -> {
+            cmd.contains("go back") || cmd.contains("back") || cmd.contains("पीछे") -> {
                 if (JarvisAccessibilityService.instance != null) {
                     JarvisAccessibilityService.instance?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
                 } else {
-                    speak("Please enable J.A.R.V.I.S. in Accessibility settings first, sir.")
+                    speak("कृपया पहले एक्सेसिबिलिटी में जार्विस को चालू करें।")
                 }
             }
-            cmd.contains("notifications") -> {
+            cmd.contains("notifications") || cmd.contains("नोटिफिकेशन") -> {
                 if (JarvisAccessibilityService.instance != null) {
                     JarvisAccessibilityService.instance?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS)
-                    speak("Opening notifications, sir.")
+                    speak("नोटिफिकेशन खोल रहा हूँ, सर।")
                 } else {
-                    speak("Please enable J.A.R.V.I.S. in Accessibility settings first, sir.")
+                    speak("कृपया पहले एक्सेसिबिलिटी में जार्विस को चालू करें।")
                 }
             }
             else -> {
-                speak("Sir, you said $cmd. Try saying Open YouTube, Call Mom, Answer call, or Battery status.")
+                speak("सर, आपने कहा $cmd। आप यूट्यूब खोलो, बैटरी बताओ, या कॉल करो बोल सकते हैं।")
             }
         }
     }
@@ -212,9 +227,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         val tm = getSystemService(Context.TELECOM_SERVICE) as TelecomManager
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED) {
             tm.acceptRingingCall()
-            speak("Answering the incoming call, sir.")
+            speak("कॉल रिसीव कर रहा हूँ, सर।")
         } else {
-            speak("Sir, please grant Answer Phone Calls permission.")
+            speak("कृपया कॉल उठाने की परमिशन दें, सर।")
         }
     }
 
@@ -223,7 +238,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         val tm = getSystemService(Context.TELECOM_SERVICE) as TelecomManager
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED) {
             tm.endCall()
-            speak("Call disconnected, sir.")
+            speak("कॉल काट दी गई है, सर।")
         }
     }
 
@@ -231,7 +246,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED ||
             ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED
         ) {
-            speak("Sir, please allow Contacts and Phone permissions first.")
+            speak("कृपया पहले कॉन्टैक्ट्स और फोन की परमिशन दें।")
             requestNeededPermissions()
             return
         }
@@ -257,11 +272,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
 
         if (phoneNumber != null) {
-            speak("Calling $matchedName, sir.")
+            speak("$matchedName को कॉल कर रहा हूँ, सर।")
             val callIntent = Intent(Intent.ACTION_CALL, Uri.parse("tel:$phoneNumber"))
             startActivity(callIntent)
         } else {
-            speak("Sorry sir, I could not find $targetName in your contacts.")
+            speak("माफ कीजिए सर, कॉन्टैक्ट्स में $targetName नाम नहीं मिला।")
         }
     }
 
@@ -273,13 +288,13 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             if (label.contains(appName)) {
                 val launchIntent = pm.getLaunchIntentForPackage(pkg.packageName)
                 if (launchIntent != null) {
-                    speak("Opening $label, sir.")
+                    speak("$label खोल रहा हूँ, सर।")
                     startActivity(launchIntent)
                     return
                 }
             }
         }
-        speak("Sir, I could not find an app named $appName on this tablet.")
+        speak("सर, टैबलेट में $appName नाम का ऐप नहीं मिला।")
     }
 
     override fun onDestroy() {
