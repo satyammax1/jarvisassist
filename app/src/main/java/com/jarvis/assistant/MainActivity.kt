@@ -76,6 +76,13 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var focusTimer: CountDownTimer? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    // PDF Audiobook Mode State
+    private var isAudiobookPlaying = false
+    private var audiobookUri: Uri? = null
+    private var audiobookTitle: String = ""
+    private var audiobookCurrentPage = 1
+    private var audiobookTotalPages = 1
+
     private val requiredPermissions = buildList {
         add(Manifest.permission.RECORD_AUDIO)
         add(Manifest.permission.CALL_PHONE)
@@ -149,6 +156,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 return@setOnClickListener
             }
 
+            isAudiobookPlaying = false
             if (isLiveMode) {
                 stopLiveMode("लाइव मोड बंद कर दिया गया है, सर।")
             } else {
@@ -167,6 +175,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), 102)
                 return@setOnClickListener
             }
+            isAudiobookPlaying = false
             if (isWakeWordMode) {
                 isWakeWordMode = false
                 stopLiveMode("हे जार्विस मोड बंद कर दिया गया है, सर।")
@@ -182,9 +191,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         stopSpeakBtn.setOnClickListener {
             activeQuizAnswer = null
+            isAudiobookPlaying = false
             isWakeWordMode = false
             updateWakeWordButtonState()
-            stopLiveMode("बोलना और सुनना बंद कर दिया गया है, सर।")
+            stopLiveMode("बोलना और ऑडियोबुक बंद कर दिया गया है, सर।")
         }
 
         sendCmdBtn.setOnClickListener {
@@ -203,6 +213,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
 
         pdfFolderBtn.setOnClickListener {
+            isAudiobookPlaying = false
             isLiveMode = false
             isWakeWordMode = false
             updateMicButtonUI()
@@ -229,6 +240,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         if (intent.getBooleanExtra("EXTRA_START_LIVE", false)) {
+            isAudiobookPlaying = false
             isWakeWordMode = false
             isLiveMode = true
             updateWakeWordButtonState()
@@ -305,6 +317,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun stopLiveMode(message: String) {
         isLiveMode = false
         isListeningNow = false
+        isAudiobookPlaying = false
         mainHandler.removeCallbacksAndMessages(null)
         try {
             speechRecognizer?.cancel()
@@ -438,7 +451,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         if (!isLiveMode && !isWakeWordMode) return
         mainHandler.removeCallbacksAndMessages(null)
         mainHandler.postDelayed({
-            if ((isLiveMode || isWakeWordMode) && !tts.isSpeaking) {
+            if ((isLiveMode || isWakeWordMode) && !tts.isSpeaking && !isAudiobookPlaying) {
                 startSilentListening()
             }
         }, delayMs)
@@ -522,13 +535,28 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 override fun onStart(utteranceId: String?) {}
                 override fun onDone(utteranceId: String?) {
                     runOnUiThread {
-                        if (isLiveMode || isWakeWordMode) scheduleNextListen(350)
+                        if (utteranceId == "AUDIOBOOK_PAGE" && isAudiobookPlaying) {
+                            audiobookCurrentPage++
+                            if (audiobookCurrentPage <= audiobookTotalPages) {
+                                saveAudiobookProgress()
+                                readNextAudiobookPage()
+                            } else {
+                                isAudiobookPlaying = false
+                                speak("सर, $audiobookTitle किताब पूरी हो गई है!")
+                            }
+                        } else if (isLiveMode || isWakeWordMode) {
+                            scheduleNextListen(350)
+                        }
                     }
                 }
                 @Deprecated("Deprecated in Java")
                 override fun onError(utteranceId: String?) {
                     runOnUiThread {
-                        if (isLiveMode || isWakeWordMode) scheduleNextListen(500)
+                        if (utteranceId == "AUDIOBOOK_PAGE") {
+                            isAudiobookPlaying = false
+                        } else if (isLiveMode || isWakeWordMode) {
+                            scheduleNextListen(500)
+                        }
                     }
                 }
             })
@@ -543,14 +571,14 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun speak(message: String) {
+    private fun speak(message: String, utteranceId: String = "JARVIS_ID") {
         isListeningNow = false
         try {
             speechRecognizer?.cancel()
         } catch (_: Exception) {}
         updateMicButtonUI()
         statusText.text = message
-        tts.speak(message, TextToSpeech.QUEUE_FLUSH, null, "JARVIS_ID")
+        tts.speak(message, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
     }
 
     private fun processCommand(cmd: String) {
@@ -571,9 +599,18 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             cmd.contains("stop") || cmd.contains("chup") || cmd.contains("ruk") ||
             cmd.contains("चुप") || cmd.contains("रुक") || cmd.contains("स्टॉप") -> {
                 activeQuizAnswer = null
+                isAudiobookPlaying = false
                 isWakeWordMode = false
                 updateWakeWordButtonState()
-                stopLiveMode("बोलना और लाइव मोड बंद कर दिया गया है, सर।")
+                stopLiveMode("बोलना और ऑडियोबुक बंद कर दिया गया है, सर।")
+            }
+
+            // PDF Audiobook Mode (Continuous Auto-Next-Page Reading)
+            cmd.contains("continue audiobook") || cmd.contains("audiobook continue") || cmd.contains("आगे पढ़ो") -> {
+                resumeSavedAudiobook()
+            }
+            cmd.contains("audiobook") || cmd.contains("ऑडियोबुक") || cmd.contains("लगातार पढ़ो") -> {
+                startAudiobook(cmd)
             }
 
             cmd.contains("pause") || cmd.contains("play video") || cmd.contains("lecture roko") ||
@@ -739,6 +776,104 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
             else -> askAdvancedAiBrain(cmd)
         }
+    }
+
+    // --- PDF Audiobook Mode ---
+    private fun startAudiobook(cmd: String) {
+        val pdfs = getPdfFilesFromLinkedFolder()
+        if (pdfs == null || pdfs.isEmpty()) {
+            speak("सर, ऑडियोबुक चलाने के लिए पहले Select PDF Folder से अपनी किताबों वाला फोल्डर जोड़ें।")
+            return
+        }
+
+        val startPage = Regex("page\\s*(\\d+)|पेज\\s*(\\d+)").find(cmd)
+            ?.groupValues?.drop(1)?.firstOrNull { it.isNotEmpty() }?.toIntOrNull() ?: 1
+
+        val cleaned = extractBookQuery(cmd.replace("audiobook", "").replace("ऑडियोबुक", "").replace("shuru", "").replace("लगातार", ""))
+        val matched = findBestMatchingPdf(pdfs, cleaned) ?: pdfs.first()
+
+        audiobookTitle = matched.first
+        audiobookUri = matched.second
+        audiobookCurrentPage = startPage
+        isLiveMode = false
+        isWakeWordMode = false
+        updateMicButtonUI()
+        updateWakeWordButtonState()
+        isAudiobookPlaying = true
+
+        saveAudiobookProgress()
+        readNextAudiobookPage()
+    }
+
+    private fun resumeSavedAudiobook() {
+        val prefs = getSharedPreferences("jarvis_prefs", Context.MODE_PRIVATE)
+        val savedUri = prefs.getString("last_audiobook_uri", null)
+        val savedTitle = prefs.getString("last_audiobook_title", null)
+        val savedPage = prefs.getInt("last_audiobook_page", 1)
+
+        if (savedUri == null || savedTitle == null) {
+            speak("सर, अभी कोई पिछली ऑडियोबुक सेव नहीं है। 'audiobook किताब का नाम' बोलें।")
+            return
+        }
+
+        audiobookUri = Uri.parse(savedUri)
+        audiobookTitle = savedTitle
+        audiobookCurrentPage = savedPage
+        isLiveMode = false
+        isWakeWordMode = false
+        updateMicButtonUI()
+        updateWakeWordButtonState()
+        isAudiobookPlaying = true
+        readNextAudiobookPage()
+    }
+
+    private fun saveAudiobookProgress() {
+        getSharedPreferences("jarvis_prefs", Context.MODE_PRIVATE).edit()
+            .putString("last_audiobook_uri", audiobookUri?.toString())
+            .putString("last_audiobook_title", audiobookTitle)
+            .putInt("last_audiobook_page", audiobookCurrentPage)
+            .apply()
+    }
+
+    private fun readNextAudiobookPage() {
+        val uri = audiobookUri ?: return
+        if (!isAudiobookPlaying) return
+
+        statusText.text = "ऑडियोबुक: $audiobookTitle (पेज $audiobookCurrentPage लोड हो रहा है...)"
+        Thread {
+            try {
+                contentResolver.openInputStream(uri)?.use { stream ->
+                    PDDocument.load(stream).use { doc ->
+                        audiobookTotalPages = doc.numberOfPages
+                        if (audiobookCurrentPage > audiobookTotalPages) {
+                            runOnUiThread {
+                                isAudiobookPlaying = false
+                                speak("सर, $audiobookTitle किताब पूरी हो गई है!")
+                            }
+                            return@Thread
+                        }
+                        val stripper = PDFTextStripper().apply {
+                            startPage = audiobookCurrentPage
+                            endPage = audiobookCurrentPage
+                        }
+                        val text = stripper.getText(doc).replace("\\s+".toRegex(), " ").trim().take(2800)
+                        runOnUiThread {
+                            if (!isAudiobookPlaying) return@runOnUiThread
+                            if (text.isEmpty()) {
+                                speak("पेज $audiobookCurrentPage पर कोई टेक्स्ट नहीं है, अगले पेज पर जा रहा हूँ।", "AUDIOBOOK_PAGE")
+                            } else {
+                                speak("पेज $audiobookCurrentPage: $text", "AUDIOBOOK_PAGE")
+                            }
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+                runOnUiThread {
+                    isAudiobookPlaying = false
+                    speak("ऑडियोबुक पढ़ने में दिक्कत आई, सर।")
+                }
+            }
+        }.start()
     }
 
     private fun askAdvancedAiBrain(question: String) {
@@ -1202,187 +1337,3 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         Thread {
             try {
                 contentResolver.openInputStream(matchedBook.second)?.use { stream ->
-                    PDDocument.load(stream).use { doc ->
-                        var bestPage = -1
-                        var bestSnippet = ""
-                        var bestScore = 0
-                        val stripper = PDFTextStripper()
-
-                        for (p in 1..doc.numberOfPages) {
-                            stripper.startPage = p
-                            stripper.endPage = p
-                            val pageText = stripper.getText(doc)
-                            val lower = pageText.lowercase(Locale.getDefault())
-                            var score = 0
-                            keywords.forEach { kw -> if (lower.contains(kw)) score += 1 }
-                            if (score > bestScore) {
-                                bestScore = score
-                                bestPage = p
-                                val firstIdx = keywords.mapNotNull { kw ->
-                                    val idx = lower.indexOf(kw)
-                                    if (idx >= 0) idx else null
-                                }.minOrNull() ?: 0
-                                val start = (firstIdx - 60).coerceAtLeast(0)
-                                val end = (start + 450).coerceAtMost(pageText.length)
-                                bestSnippet = pageText.substring(start, end).replace("\\s+".toRegex(), " ").trim()
-                            }
-                        }
-
-                        runOnUiThread {
-                            if (bestPage != -1) {
-                                speak("सर, ${matchedBook.first} के पेज $bestPage पर मिला: $bestSnippet")
-                            } else {
-                                speak("सर, ${matchedBook.first} में यह टॉपिक नहीं मिला।")
-                            }
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                runOnUiThread { speak("पीडीएफ स्कैन करने में समस्या आई, सर।") }
-            }
-        }.start()
-    }
-
-    private fun setStudyTimer(minutes: Int) {
-        val intent = Intent(AlarmClock.ACTION_SET_TIMER).apply {
-            putExtra(AlarmClock.EXTRA_LENGTH, minutes * 60)
-            putExtra(AlarmClock.EXTRA_MESSAGE, "J.A.R.V.I.S. Study Timer")
-            putExtra(AlarmClock.EXTRA_SKIP_UI, true)
-        }
-        try {
-            startActivity(intent)
-            speak("सर, $minutes मिनट का स्टडी टाइमर लगा दिया है।")
-        } catch (e: Exception) {
-            speak("सर, क्लॉक ऐप में टाइमर सेट नहीं हो पाया।")
-        }
-    }
-
-    private fun setQuickAlarm(hour: Int) {
-        val safeHour = hour.coerceIn(0, 23)
-        val intent = Intent(AlarmClock.ACTION_SET_ALARM).apply {
-            putExtra(AlarmClock.EXTRA_HOUR, safeHour)
-            putExtra(AlarmClock.EXTRA_MINUTES, 0)
-            putExtra(AlarmClock.EXTRA_MESSAGE, "J.A.R.V.I.S. Alarm")
-        }
-        try {
-            startActivity(intent)
-            speak("सर, $safeHour बजे का अलार्म सेट कर रहा हूँ।")
-        } catch (e: Exception) {
-            speak("सर, अलार्म सेट नहीं हो पाया।")
-        }
-    }
-
-    private fun toggleTorch(turnOn: Boolean) {
-        try {
-            val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
-            val cameraId = cm.cameraIdList.firstOrNull { id ->
-                cm.getCameraCharacteristics(id).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
-            }
-            if (cameraId != null) {
-                cm.setTorchMode(cameraId, turnOn)
-                speak(if (turnOn) "टॉर्च चालू कर दी है, सर।" else "टॉर्च बंद कर दी है, सर।")
-            } else {
-                speak("सर, इस टैबलेट में फ्लैशलाइट उपलब्ध नहीं है।")
-            }
-        } catch (e: Exception) {
-            speak("टॉर्च कंट्रोल करने में दिक्कत आई, सर।")
-        }
-    }
-
-    private fun adjustVolume(direction: Int) {
-        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        am.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, AudioManager.FLAG_SHOW_UI)
-        speak("वॉल्यूम एडजस्ट कर दिया है, सर।")
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun answerIncomingCall() {
-        val tm = getSystemService(Context.TELECOM_SERVICE) as TelecomManager
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED) {
-            tm.acceptRingingCall()
-            speak("कॉल रिसीव कर रहा हूँ, सर।")
-        } else {
-            speak("कृपया कॉल उठाने की परमिशन दें, सर।")
-        }
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun endActiveCall() {
-        val tm = getSystemService(Context.TELECOM_SERVICE) as TelecomManager
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED) {
-            tm.endCall()
-            speak("कॉल काट दी गई है, सर।")
-        }
-    }
-
-    private fun callContactByName(targetName: String) {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED ||
-            ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED
-        ) {
-            speak("कृपया पहले कॉन्टैक्ट्स और फोन की परमिशन दें।")
-            requestNeededPermissions()
-            return
-        }
-
-        val cursor = contentResolver.query(
-            ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-            arrayOf(
-                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
-                ContactsContract.CommonDataKinds.Phone.NUMBER
-            ),
-            "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} LIKE ?",
-            arrayOf("%$targetName%"),
-            null
-        )
-
-        var phoneNumber: String? = null
-        var matchedName: String? = null
-        cursor?.use {
-            if (it.moveToFirst()) {
-                matchedName = it.getString(0)
-                phoneNumber = it.getString(1)
-            }
-        }
-
-        if (phoneNumber != null) {
-            speak("$matchedName को कॉल कर रहा हूँ, सर।")
-            val callIntent = Intent(Intent.ACTION_CALL, Uri.parse("tel:$phoneNumber"))
-            startActivity(callIntent)
-        } else {
-            speak("माफ कीजिए सर, कॉन्टैक्ट्स में $targetName नाम नहीं मिला।")
-        }
-    }
-
-    private fun openAppOrPdfFallback(targetName: String) {
-        val pm = packageManager
-        val packages = pm.getInstalledApplications(PackageManager.GET_META_DATA)
-        for (pkg in packages) {
-            val label = pm.getApplicationLabel(pkg).toString().lowercase(Locale.getDefault())
-            if (label.contains(targetName)) {
-                val launchIntent = pm.getLaunchIntentForPackage(pkg.packageName)
-                if (launchIntent != null) {
-                    speak("$label खोल रहा हूँ, सर।")
-                    startActivity(launchIntent)
-                    return
-                }
-            }
-        }
-        val pdfs = getPdfFilesFromLinkedFolder()
-        if (pdfs != null) {
-            val pdfMatch = findBestMatchingPdf(pdfs, extractBookQuery(targetName))
-            if (pdfMatch != null) {
-                openPdfByName(extractBookQuery(targetName))
-                return
-            }
-        }
-        speak("सर, टैबलेट में $targetName नाम का ऐप या किताब नहीं मिली।")
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        focusTimer?.cancel()
-        mainHandler.removeCallbacksAndMessages(null)
-        speechRecognizer?.destroy()
-        tts.shutdown()
-    }
-}
