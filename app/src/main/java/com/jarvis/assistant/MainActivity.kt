@@ -10,9 +10,14 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Color
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
+import android.media.AudioManager
 import android.net.Uri
 import android.os.BatteryManager
+import android.os.Build
 import android.os.Bundle
+import android.provider.AlarmClock
 import android.provider.ContactsContract
 import android.provider.DocumentsContract
 import android.provider.Settings
@@ -26,6 +31,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
+import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.text.PDFTextStripper
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
@@ -80,13 +90,15 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 .apply()
 
             updatePdfFolderButtonState()
-            speak("पीडीएफ फोल्डर सेव हो गया है, सर। अब आप किसी भी किताब का नाम बोलकर उसे खोल सकते हैं।")
+            speak("पीडीएफ फोल्डर सेव हो गया है, सर। अब आप किसी भी किताब को खोल, पढ़, या उससे सवाल पूछ सकते हैं।")
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+
+        PDFBoxResourceLoader.init(applicationContext)
 
         statusText = findViewById(R.id.statusText)
         micButton = findViewById(R.id.micButton)
@@ -212,21 +224,81 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         statusText.text = "आपने कहा: \"$cmd\""
 
         when {
+            // Stop TTS speaking
+            cmd == "stop" || cmd.contains("chup") || cmd.contains("चुप") || cmd.contains("बंद करो") -> {
+                tts.stop()
+                statusText.text = "रुका हुआ है, सर।"
+            }
+
+            // PDF Topic Search (e.g. "ask science about photosynthesis" or "search science photosynthesis")
+            cmd.startsWith("ask ") || cmd.startsWith("search ") || cmd.contains("ढूंढो") -> {
+                handlePdfTopicSearch(cmd)
+            }
+
+            // PDF Read Aloud (e.g. "read science pdf" or "read science page 3")
+            cmd.startsWith("read ") || cmd.contains("पढ़ो") || cmd.contains("सुनाओ") -> {
+                handlePdfReadAloud(cmd)
+            }
+
+            // PDF List / Open
             cmd.contains("list pdf") || cmd.contains("pdf list") || cmd.contains("कौन सी किताब") -> {
                 listSavedPdfs()
             }
             cmd.contains("pdf") || cmd.contains("पीडीएफ") || cmd.contains("किताब") -> {
                 val cleanName = cmd
-                    .replace("open", "")
-                    .replace("pdf", "")
-                    .replace("पीडीएफ", "")
-                    .replace("किताब", "")
-                    .replace("खोलो", "")
-                    .replace("करो", "")
-                    .replace("को", "")
-                    .trim()
+                    .replace("open", "").replace("pdf", "").replace("पीडीएफ", "")
+                    .replace("किताब", "").replace("खोलो", "").replace("करो", "").replace("को", "").trim()
                 openPdfByName(cleanName)
             }
+
+            // Time & Date
+            cmd.contains("time") || cmd.contains("समय") || cmd.contains("बजे") -> {
+                val now = SimpleDateFormat("hh:mm a", Locale("en", "IN")).format(Date())
+                speak("सर, अभी $now हुए हैं।")
+            }
+            cmd.contains("date") || cmd.contains("तारीख") || cmd.contains("दिन") -> {
+                val today = SimpleDateFormat("EEEE, dd MMMM yyyy", Locale("en", "IN")).format(Date())
+                speak("सर, आज $today है।")
+            }
+
+            // Timer & Alarm
+            cmd.contains("timer") || cmd.contains("टाइमर") -> {
+                val mins = Regex("\\d+").find(cmd)?.value?.toIntOrNull() ?: 10
+                setStudyTimer(mins)
+            }
+            cmd.contains("alarm") || cmd.contains("अलार्म") -> {
+                val hour = Regex("\\d+").find(cmd)?.value?.toIntOrNull() ?: 6
+                setQuickAlarm(hour)
+            }
+
+            // Torch / Flashlight
+            cmd.contains("torch on") || cmd.contains("flashlight on") || cmd.contains("टॉर्च चालू") -> {
+                toggleTorch(true)
+            }
+            cmd.contains("torch off") || cmd.contains("flashlight off") || cmd.contains("टॉर्च बंद") -> {
+                toggleTorch(false)
+            }
+
+            // Volume Controls
+            cmd.contains("volume up") || cmd.contains("आवाज बढ़ाओ") -> adjustVolume(AudioManager.ADJUST_RAISE)
+            cmd.contains("volume down") || cmd.contains("आवाज कम") -> adjustVolume(AudioManager.ADJUST_LOWER)
+            cmd.contains("mute") || cmd.contains("साइलेंट") -> adjustVolume(AudioManager.ADJUST_MUTE)
+
+            // Wi-Fi & Bluetooth Quick Settings
+            cmd.contains("wifi") || cmd.contains("wi-fi") || cmd.contains("वाईफाई") -> {
+                speak("वाई-फाई सेटिंग्स खोल रहा हूँ, सर।")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    startActivity(Intent(Settings.Panel.ACTION_WIFI))
+                } else {
+                    startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
+                }
+            }
+            cmd.contains("bluetooth") || cmd.contains("ब्लूटूथ") -> {
+                speak("ब्लूटूथ सेटिंग्स खोल रहा हूँ, सर।")
+                startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
+            }
+
+            // Calls
             cmd.contains("receive call") || cmd.contains("answer call") || cmd.contains("pick up") ||
             cmd.contains("call uthao") || cmd.contains("कॉल उठाओ") || cmd.contains("फोन उठाओ") -> {
                 answerIncomingCall()
@@ -236,27 +308,26 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 endActiveCall()
             }
             cmd.startsWith("call ") -> {
-                val name = cmd.removePrefix("call ").trim()
-                callContactByName(name)
+                callContactByName(cmd.removePrefix("call ").trim())
             }
             cmd.contains("कॉल करो") || cmd.contains("फोन करो") -> {
                 val name = cmd.replace("को कॉल करो", "").replace("कॉल करो", "")
                     .replace("को फोन करो", "").replace("फोन करो", "").trim()
                 callContactByName(name)
             }
-            cmd.startsWith("open ") -> {
-                val appName = cmd.removePrefix("open ").trim()
-                openInstalledApp(appName)
-            }
-            cmd.contains("खोलो") -> {
-                val appName = cmd.replace("खोलो", "").trim()
-                openInstalledApp(appName)
-            }
+
+            // Open Installed Apps
+            cmd.startsWith("open ") -> openInstalledApp(cmd.removePrefix("open ").trim())
+            cmd.contains("खोलो") -> openInstalledApp(cmd.replace("खोलो", "").trim())
+
+            // Battery Status
             cmd.contains("battery") || cmd.contains("बैटरी") -> {
                 val bm = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
                 val level = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
                 speak("सर, आपके टैबलेट की बैटरी $level प्रतिशत है।")
             }
+
+            // Accessibility Navigation
             cmd.contains("go home") || cmd.contains("home screen") || cmd.contains("होम") -> {
                 if (JarvisAccessibilityService.instance != null) {
                     JarvisAccessibilityService.instance?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
@@ -281,7 +352,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 }
             }
             else -> {
-                speak("सर, आपने कहा $cmd। आप यूट्यूब खोलो, पीडीएफ खोलो, बैटरी बताओ, या कॉल करो बोल सकते हैं।")
+                speak("सर, आपने कहा $cmd। आप 'read science page 1', 'ask science about osmosis', '15 minute timer', या 'battery status' बोल सकते हैं।")
             }
         }
     }
@@ -339,11 +410,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             listSavedPdfs()
             return
         }
-
         val match = pdfs.firstOrNull {
             it.first.lowercase(Locale.getDefault()).contains(query.lowercase(Locale.getDefault()))
         }
-
         if (match != null) {
             speak("${match.first} खोल रहा हूँ, सर।")
             val viewIntent = Intent(Intent.ACTION_VIEW).apply {
@@ -353,11 +422,181 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             try {
                 startActivity(viewIntent)
             } catch (e: ActivityNotFoundException) {
-                speak("सर, टैबलेट में पीडीएफ खोलने वाला कोई ऐप नहीं मिला। कृपया एक पीडीएफ व्यूअर इंस्टॉल करें।")
+                speak("सर, टैबलेट में पीडीएफ खोलने वाला कोई ऐप नहीं मिला।")
             }
         } else {
             speak("माफ कीजिए सर, फोल्डर में $query नाम की कोई पीडीएफ नहीं मिली।")
         }
+    }
+
+    // Read a specific page of a PDF aloud offline (e.g. "read science page 2")
+    private fun handlePdfReadAloud(cmd: String) {
+        val pdfs = getPdfFilesFromLinkedFolder()
+        if (pdfs == null || pdfs.isEmpty()) {
+            speak("सर, पहले Select PDF Folder से अपनी किताबों वाला फोल्डर जोड़ें।")
+            return
+        }
+
+        val pageNum = Regex("page\\s*(\\d+)|पेज\\s*(\\d+)").find(cmd)
+            ?.groupValues?.drop(1)?.firstOrNull { it.isNotEmpty() }?.toIntOrNull() ?: 1
+
+        val matchedBook = pdfs.firstOrNull { (name, _) ->
+            val baseName = name.removeSuffix(".pdf").lowercase(Locale.getDefault())
+            cmd.contains(baseName) || baseName.split(" ", "_", "-").any { w -> w.length > 2 && cmd.contains(w) }
+        } ?: pdfs.first()
+
+        speak("${matchedBook.first} का पेज $pageNum पढ़ रहा हूँ, सर।")
+
+        Thread {
+            try {
+                contentResolver.openInputStream(matchedBook.second)?.use { stream ->
+                    PDDocument.load(stream).use { doc ->
+                        val safePage = pageNum.coerceIn(1, doc.numberOfPages)
+                        val stripper = PDFTextStripper().apply {
+                            startPage = safePage
+                            endPage = safePage
+                        }
+                        val text = stripper.getText(doc).replace("\\s+".toRegex(), " ").trim()
+                        runOnUiThread {
+                            if (text.isEmpty()) {
+                                speak("सर, पेज $safePage में कोई पढ़ने लायक टेक्स्ट नहीं मिला।")
+                            } else {
+                                speak("पेज $safePage: ${text.take(600)}")
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    speak("माफ कीजिए सर, यह पीडीएफ पढ़ने में दिक्कत आई।")
+                }
+            }
+        }.start()
+    }
+
+    // Search whole PDF book for a topic and speak the matching section
+    private fun handlePdfTopicSearch(cmd: String) {
+        val pdfs = getPdfFilesFromLinkedFolder()
+        if (pdfs == null || pdfs.isEmpty()) {
+            speak("सर, पहले Select PDF Folder से अपनी किताबों वाला फोल्डर जोड़ें।")
+            return
+        }
+
+        val matchedBook = pdfs.firstOrNull { (name, _) ->
+            val baseName = name.removeSuffix(".pdf").lowercase(Locale.getDefault())
+            baseName.split(" ", "_", "-").any { w -> w.length > 2 && cmd.contains(w) }
+        } ?: pdfs.first()
+
+        val stopWords = setOf("ask", "search", "about", "in", "from", "pdf", "book", "me", "mein", "batao", "ढूंढो", "बताओ")
+        val bookWords = matchedBook.first.removeSuffix(".pdf").lowercase(Locale.getDefault()).split(" ", "_", "-").toSet()
+        val keywords = cmd.split("\\s+".toRegex())
+            .filter { it.length > 2 && it !in stopWords && it !in bookWords }
+
+        if (keywords.isEmpty()) {
+            speak("सर, कृपया टॉपिक का नाम भी बोलें, जैसे: ask science about photosynthesis.")
+            return
+        }
+
+        speak("${matchedBook.first} में ${keywords.joinToString(" ")} ढूंढ रहा हूँ, सर।")
+
+        Thread {
+            try {
+                contentResolver.openInputStream(matchedBook.second)?.use { stream ->
+                    PDDocument.load(stream).use { doc ->
+                        var bestPage = -1
+                        var bestSnippet = ""
+                        var bestScore = 0
+                        val stripper = PDFTextStripper()
+
+                        for (p in 1..doc.numberOfPages) {
+                            stripper.startPage = p
+                            stripper.endPage = p
+                            val pageText = stripper.getText(doc)
+                            val lower = pageText.lowercase(Locale.getDefault())
+                            var score = 0
+                            keywords.forEach { kw ->
+                                if (lower.contains(kw)) score += 1
+                            }
+                            if (score > bestScore) {
+                                bestScore = score
+                                bestPage = p
+                                val firstIdx = keywords.mapNotNull { kw ->
+                                    val idx = lower.indexOf(kw)
+                                    if (idx >= 0) idx else null
+                                }.minOrNull() ?: 0
+                                val start = (firstIdx - 60).coerceAtLeast(0)
+                                val end = (start + 450).coerceAtMost(pageText.length)
+                                bestSnippet = pageText.substring(start, end).replace("\\s+".toRegex(), " ").trim()
+                            }
+                        }
+
+                        runOnUiThread {
+                            if (bestPage != -1) {
+                                speak("सर, ${matchedBook.first} के पेज $bestPage पर मिला: $bestSnippet")
+                            } else {
+                                speak("सर, ${matchedBook.first} में यह टॉपिक नहीं मिला।")
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    speak("पीडीएफ स्कैन करने में समस्या आई, सर।")
+                }
+            }
+        }.start()
+    }
+
+    private fun setStudyTimer(minutes: Int) {
+        val intent = Intent(AlarmClock.ACTION_SET_TIMER).apply {
+            putExtra(AlarmClock.EXTRA_LENGTH, minutes * 60)
+            putExtra(AlarmClock.EXTRA_MESSAGE, "J.A.R.V.I.S. Study Timer")
+            putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+        }
+        try {
+            startActivity(intent)
+            speak("सर, $minutes मिनट का स्टडी टाइमर लगा दिया है।")
+        } catch (e: Exception) {
+            speak("सर, क्लॉक ऐप में टाइमर सेट नहीं हो पाया।")
+        }
+    }
+
+    private fun setQuickAlarm(hour: Int) {
+        val safeHour = hour.coerceIn(0, 23)
+        val intent = Intent(AlarmClock.ACTION_SET_ALARM).apply {
+            putExtra(AlarmClock.EXTRA_HOUR, safeHour)
+            putExtra(AlarmClock.EXTRA_MINUTES, 0)
+            putExtra(AlarmClock.EXTRA_MESSAGE, "J.A.R.V.I.S. Alarm")
+        }
+        try {
+            startActivity(intent)
+            speak("सर, $safeHour बजे का अलार्म सेट कर रहा हूँ।")
+        } catch (e: Exception) {
+            speak("सर, अलार्म सेट नहीं हो पाया।")
+        }
+    }
+
+    private fun toggleTorch(turnOn: Boolean) {
+        try {
+            val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val cameraId = cm.cameraIdList.firstOrNull { id ->
+                cm.getCameraCharacteristics(id).get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+            }
+            if (cameraId != null) {
+                cm.setTorchMode(cameraId, turnOn)
+                speak(if (turnOn) "टॉर्च चालू कर दी है, सर।" else "टॉर्च बंद कर दी है, सर।")
+            } else {
+                speak("सर, इस टैबलेट में फ्लैशलाइट उपलब्ध नहीं है।")
+            }
+        } catch (e: Exception) {
+            speak("टॉर्च कंट्रोल करने में दिक्कत आई, सर।")
+        }
+    }
+
+    private fun adjustVolume(direction: Int) {
+        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        am.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, AudioManager.FLAG_SHOW_UI)
+        speak("वॉल्यूम एडजस्ट कर दिया है, सर।")
     }
 
     @SuppressLint("MissingPermission")
