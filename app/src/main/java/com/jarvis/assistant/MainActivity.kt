@@ -42,6 +42,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private lateinit var statusText: TextView
     private lateinit var micButton: Button
+    private lateinit var stopSpeakBtn: Button
     private lateinit var pdfFolderBtn: Button
     private lateinit var accessibilityBtn: Button
     private lateinit var commandEditText: EditText
@@ -90,7 +91,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 .apply()
 
             updatePdfFolderButtonState()
-            speak("पीडीएफ फोल्डर सेव हो गया है, सर। अब आप किसी भी किताब को खोल, पढ़, या उससे सवाल पूछ सकते हैं।")
+            val count = getPdfFilesFromLinkedFolder()?.size ?: 0
+            speak("पीडीएफ फोल्डर सेव हो गया है, सर। इसमें $count पीडीएफ किताबें मिली हैं।")
         }
     }
 
@@ -102,6 +104,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         statusText = findViewById(R.id.statusText)
         micButton = findViewById(R.id.micButton)
+        stopSpeakBtn = findViewById(R.id.stopSpeakBtn)
         pdfFolderBtn = findViewById(R.id.pdfFolderBtn)
         accessibilityBtn = findViewById(R.id.accessibilityBtn)
         commandEditText = findViewById(R.id.commandEditText)
@@ -122,6 +125,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             } else {
                 startListening()
             }
+        }
+
+        stopSpeakBtn.setOnClickListener {
+            tts.stop()
+            statusText.text = "बोलना बंद कर दिया गया है, सर।"
         }
 
         sendCmdBtn.setOnClickListener {
@@ -224,31 +232,31 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         statusText.text = "आपने कहा: \"$cmd\""
 
         when {
-            // Stop TTS speaking
-            cmd == "stop" || cmd.contains("chup") || cmd.contains("चुप") || cmd.contains("बंद करो") -> {
+            // Stop TTS immediately
+            cmd.contains("stop") || cmd.contains("chup") || cmd.contains("ruk") ||
+            cmd.contains("चुप") || cmd.contains("रुक") || cmd.contains("स्टॉप") -> {
                 tts.stop()
-                statusText.text = "रुका हुआ है, सर।"
+                statusText.text = "बोलना बंद कर दिया गया है, सर।"
             }
 
-            // PDF Topic Search (e.g. "ask science about photosynthesis" or "search science photosynthesis")
+            // PDF Topic Search
             cmd.startsWith("ask ") || cmd.startsWith("search ") || cmd.contains("ढूंढो") -> {
                 handlePdfTopicSearch(cmd)
             }
 
-            // PDF Read Aloud (e.g. "read science pdf" or "read science page 3")
+            // PDF Read Aloud
             cmd.startsWith("read ") || cmd.contains("पढ़ो") || cmd.contains("सुनाओ") -> {
                 handlePdfReadAloud(cmd)
             }
 
-            // PDF List / Open
-            cmd.contains("list pdf") || cmd.contains("pdf list") || cmd.contains("कौन सी किताब") -> {
+            // PDF / Book List or Open
+            cmd.contains("list pdf") || cmd.contains("pdf list") || cmd.contains("book list") ||
+            cmd.contains("कौन सी किताब") -> {
                 listSavedPdfs()
             }
-            cmd.contains("pdf") || cmd.contains("पीडीएफ") || cmd.contains("किताब") -> {
-                val cleanName = cmd
-                    .replace("open", "").replace("pdf", "").replace("पीडीएफ", "")
-                    .replace("किताब", "").replace("खोलो", "").replace("करो", "").replace("को", "").trim()
-                openPdfByName(cleanName)
+            cmd.contains("pdf") || cmd.contains("book") || cmd.contains("बुक") ||
+            cmd.contains("पीडीएफ") || cmd.contains("किताब") -> {
+                openPdfByName(extractBookQuery(cmd))
             }
 
             // Time & Date
@@ -272,12 +280,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
 
             // Torch / Flashlight
-            cmd.contains("torch on") || cmd.contains("flashlight on") || cmd.contains("टॉर्च चालू") -> {
-                toggleTorch(true)
-            }
-            cmd.contains("torch off") || cmd.contains("flashlight off") || cmd.contains("टॉर्च बंद") -> {
-                toggleTorch(false)
-            }
+            cmd.contains("torch on") || cmd.contains("flashlight on") || cmd.contains("टॉर्च चालू") -> toggleTorch(true)
+            cmd.contains("torch off") || cmd.contains("flashlight off") || cmd.contains("टॉर्च बंद") -> toggleTorch(false)
 
             // Volume Controls
             cmd.contains("volume up") || cmd.contains("आवाज बढ़ाओ") -> adjustVolume(AudioManager.ADJUST_RAISE)
@@ -300,25 +304,22 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
             // Calls
             cmd.contains("receive call") || cmd.contains("answer call") || cmd.contains("pick up") ||
-            cmd.contains("call uthao") || cmd.contains("कॉल उठाओ") || cmd.contains("फोन उठाओ") -> {
-                answerIncomingCall()
-            }
+            cmd.contains("call uthao") || cmd.contains("कॉल उठाओ") || cmd.contains("फोन उठाओ") -> answerIncomingCall()
             cmd.contains("end call") || cmd.contains("cut call") || cmd.contains("call kato") ||
-            cmd.contains("कॉल काटो") || cmd.contains("फोन काटो") -> {
-                endActiveCall()
-            }
-            cmd.startsWith("call ") -> {
-                callContactByName(cmd.removePrefix("call ").trim())
-            }
+            cmd.contains("कॉल काटो") || cmd.contains("फोन काटो") -> endActiveCall()
+            cmd.startsWith("call ") -> callContactByName(cmd.removePrefix("call ").trim())
             cmd.contains("कॉल करो") || cmd.contains("फोन करो") -> {
                 val name = cmd.replace("को कॉल करो", "").replace("कॉल करो", "")
                     .replace("को फोन करो", "").replace("फोन करो", "").trim()
                 callContactByName(name)
             }
 
-            // Open Installed Apps
-            cmd.startsWith("open ") -> openInstalledApp(cmd.removePrefix("open ").trim())
-            cmd.contains("खोलो") -> openInstalledApp(cmd.replace("खोलो", "").trim())
+            // Open Installed App (with automatic PDF fallback if no app matches)
+            cmd.startsWith("open ") -> openAppOrPdfFallback(cmd.removePrefix("open ").trim())
+            cmd.contains("खोलो") || cmd.contains("kholo") -> {
+                val target = cmd.replace("खोलो", "").replace("kholo", "").replace("karo", "").trim()
+                openAppOrPdfFallback(target)
+            }
 
             // Battery Status
             cmd.contains("battery") || cmd.contains("बैटरी") -> {
@@ -352,9 +353,20 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 }
             }
             else -> {
-                speak("सर, आपने कहा $cmd। आप 'read science page 1', 'ask science about osmosis', '15 minute timer', या 'battery status' बोल सकते हैं।")
+                speak("सर, आपने कहा $cmd। आप 'theory of machines book open karo', 'list pdf', या 'battery status' बोल सकते हैं।")
             }
         }
+    }
+
+    private fun extractBookQuery(cmd: String): String {
+        val junk = setOf(
+            "open", "pdf", "book", "ki", "ka", "ke", "ko", "karo", "kholo", "wala", "wali",
+            "पीडीएफ", "बुक", "किताब", "की", "का", "के", "को", "खोलो", "करो"
+        )
+        return cmd.replace(Regex("[^a-z0-9\\u0900-\\u097F\\s]"), " ")
+            .split("\\s+".toRegex())
+            .filter { it.isNotBlank() && it !in junk }
+            .joinToString(" ")
     }
 
     private fun getPdfFilesFromLinkedFolder(): List<Pair<String, Uri>>? {
@@ -362,28 +374,61 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             .getString("pdf_folder_uri", null) ?: return null
 
         val treeUri = Uri.parse(savedUriStr)
-        val docId = DocumentsContract.getTreeDocumentId(treeUri)
-        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, docId)
+        val rootDocId = DocumentsContract.getTreeDocumentId(treeUri)
         val result = mutableListOf<Pair<String, Uri>>()
 
-        val projection = arrayOf(
-            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-            DocumentsContract.Document.COLUMN_MIME_TYPE
-        )
-
-        contentResolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
-            while (cursor.moveToNext()) {
-                val id = cursor.getString(0)
-                val name = cursor.getString(1) ?: ""
-                val mime = cursor.getString(2) ?: ""
-                if (mime == "application/pdf" || name.lowercase(Locale.getDefault()).endsWith(".pdf")) {
-                    val fileUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, id)
-                    result.add(Pair(name, fileUri))
+        fun scanDir(parentDocId: String, depth: Int) {
+            if (depth > 2) return
+            val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId)
+            val projection = arrayOf(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_MIME_TYPE
+            )
+            try {
+                contentResolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
+                    while (cursor.moveToNext()) {
+                        val id = cursor.getString(0)
+                        val name = cursor.getString(1) ?: ""
+                        val mime = cursor.getString(2) ?: ""
+                        if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                            scanDir(id, depth + 1)
+                        } else if (mime == "application/pdf" || name.lowercase(Locale.getDefault()).endsWith(".pdf")) {
+                            val fileUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, id)
+                            result.add(Pair(name, fileUri))
+                        }
+                    }
                 }
+            } catch (_: Exception) {}
+        }
+
+        scanDir(rootDocId, 0)
+        return result
+    }
+
+    private fun findBestMatchingPdf(pdfs: List<Pair<String, Uri>>, query: String): Pair<String, Uri>? {
+        val cleanQuery = query.lowercase(Locale.getDefault()).trim()
+        if (cleanQuery.isEmpty()) return null
+        val queryWords = cleanQuery.split("\\s+".toRegex()).filter { it.length >= 2 }
+
+        var bestMatch: Pair<String, Uri>? = null
+        var bestScore = 0
+
+        for (item in pdfs) {
+            val normalizedName = item.first.lowercase(Locale.getDefault())
+                .replace("_", " ").replace("-", " ").replace(".pdf", "")
+            if (normalizedName.contains(cleanQuery)) return item
+
+            var score = 0
+            for (w in queryWords) {
+                if (normalizedName.contains(w)) score++
+            }
+            if (score > bestScore) {
+                bestScore = score
+                bestMatch = item
             }
         }
-        return result
+        return if (bestScore > 0) bestMatch else null
     }
 
     private fun listSavedPdfs() {
@@ -410,9 +455,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             listSavedPdfs()
             return
         }
-        val match = pdfs.firstOrNull {
-            it.first.lowercase(Locale.getDefault()).contains(query.lowercase(Locale.getDefault()))
-        }
+        val match = findBestMatchingPdf(pdfs, query)
         if (match != null) {
             speak("${match.first} खोल रहा हूँ, सर।")
             val viewIntent = Intent(Intent.ACTION_VIEW).apply {
@@ -429,7 +472,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
 
-    // Read a specific page of a PDF aloud offline (e.g. "read science page 2")
     private fun handlePdfReadAloud(cmd: String) {
         val pdfs = getPdfFilesFromLinkedFolder()
         if (pdfs == null || pdfs.isEmpty()) {
@@ -440,11 +482,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         val pageNum = Regex("page\\s*(\\d+)|पेज\\s*(\\d+)").find(cmd)
             ?.groupValues?.drop(1)?.firstOrNull { it.isNotEmpty() }?.toIntOrNull() ?: 1
 
-        val matchedBook = pdfs.firstOrNull { (name, _) ->
-            val baseName = name.removeSuffix(".pdf").lowercase(Locale.getDefault())
-            cmd.contains(baseName) || baseName.split(" ", "_", "-").any { w -> w.length > 2 && cmd.contains(w) }
-        } ?: pdfs.first()
-
+        val matchedBook = findBestMatchingPdf(pdfs, extractBookQuery(cmd)) ?: pdfs.first()
         speak("${matchedBook.first} का पेज $pageNum पढ़ रहा हूँ, सर।")
 
         Thread {
@@ -474,7 +512,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }.start()
     }
 
-    // Search whole PDF book for a topic and speak the matching section
     private fun handlePdfTopicSearch(cmd: String) {
         val pdfs = getPdfFilesFromLinkedFolder()
         if (pdfs == null || pdfs.isEmpty()) {
@@ -482,11 +519,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             return
         }
 
-        val matchedBook = pdfs.firstOrNull { (name, _) ->
-            val baseName = name.removeSuffix(".pdf").lowercase(Locale.getDefault())
-            baseName.split(" ", "_", "-").any { w -> w.length > 2 && cmd.contains(w) }
-        } ?: pdfs.first()
-
+        val matchedBook = findBestMatchingPdf(pdfs, extractBookQuery(cmd)) ?: pdfs.first()
         val stopWords = setOf("ask", "search", "about", "in", "from", "pdf", "book", "me", "mein", "batao", "ढूंढो", "बताओ")
         val bookWords = matchedBook.first.removeSuffix(".pdf").lowercase(Locale.getDefault()).split(" ", "_", "-").toSet()
         val keywords = cmd.split("\\s+".toRegex())
@@ -657,12 +690,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
 
-    private fun openInstalledApp(appName: String) {
+    private fun openAppOrPdfFallback(targetName: String) {
         val pm = packageManager
         val packages = pm.getInstalledApplications(PackageManager.GET_META_DATA)
         for (pkg in packages) {
             val label = pm.getApplicationLabel(pkg).toString().lowercase(Locale.getDefault())
-            if (label.contains(appName)) {
+            if (label.contains(targetName)) {
                 val launchIntent = pm.getLaunchIntentForPackage(pkg.packageName)
                 if (launchIntent != null) {
                     speak("$label खोल रहा हूँ, सर।")
@@ -671,7 +704,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 }
             }
         }
-        speak("सर, टैबलेट में $appName नाम का ऐप नहीं मिला।")
+        // If no app matched, check if a PDF book matches that name
+        val pdfs = getPdfFilesFromLinkedFolder()
+        if (pdfs != null) {
+            val pdfMatch = findBestMatchingPdf(pdfs, extractBookQuery(targetName))
+            if (pdfMatch != null) {
+                openPdfByName(extractBookQuery(targetName))
+                return
+            }
+        }
+        speak("सर, टैबलेट में $targetName नाम का ऐप या किताब नहीं मिली।")
     }
 
     override fun onDestroy() {
