@@ -71,6 +71,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var isLiveMode = false
     private var isWakeWordMode = false
     private var isListeningNow = false
+    private var useEnglishFallback = false
     private var activeQuizAnswer: String? = null
     private var focusTimer: CountDownTimer? = null
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -190,7 +191,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             val rawTyped = commandEditText.text.toString().trim()
             if (rawTyped.isNotEmpty()) {
                 commandEditText.text.clear()
-                // Preserve exact case if setting API key
                 if (rawTyped.lowercase(Locale.getDefault()).startsWith("set api key ")) {
                     val key = rawTyped.substringAfter("set api key ").trim()
                     getSharedPreferences("jarvis_prefs", Context.MODE_PRIVATE)
@@ -327,16 +327,32 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun setupSilentSpeechRecognizer() {
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) return
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            statusText.text = "Silent mic unavailable; popup mode ready."
+            return
+        }
         speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
         speechRecognizer?.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {
                 isListeningNow = true
                 updateMicButtonUI()
-                if (isWakeWordMode && !isLiveMode) {
-                    statusText.text = "स्टैंडबाय: 'Hey Jarvis' बोलें..."
+                statusText.text = if (isWakeWordMode && !isLiveMode) {
+                    "स्टैंडबाय: 'Hey Jarvis' बोलें..."
                 } else {
-                    statusText.text = "सुन रहा हूँ, सर... बोलिए"
+                    "सुन रहा हूँ, सर... बोलिए!"
+                }
+            }
+
+            override fun onBeginningOfSpeech() {
+                statusText.text = "आवाज़ मिल रही है..."
+            }
+
+            override fun onPartialResults(partialResults: Bundle?) {
+                val partial = partialResults
+                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()
+                if (!partial.isNullOrBlank()) {
+                    statusText.text = "सुन रहा हूँ: \"$partial\""
                 }
             }
 
@@ -375,29 +391,45 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
                 when (error) {
                     SpeechRecognizer.ERROR_NO_MATCH,
-                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> scheduleNextListen(450)
+                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
+                        statusText.text = "कुछ सुनाई नहीं दिया, फिर से सुन रहा हूँ..."
+                        scheduleNextListen(450)
+                    }
                     SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> scheduleNextListen(900)
-                    SpeechRecognizer.ERROR_NETWORK,
-                    SpeechRecognizer.ERROR_NETWORK_TIMEOUT,
+                    12, 13 -> {
+                        if (!useEnglishFallback) {
+                            useEnglishFallback = true
+                            statusText.text = "Switching voice listener to English (India)..."
+                            scheduleNextListen(400)
+                        } else {
+                            isLiveMode = false
+                            isWakeWordMode = false
+                            updateMicButtonUI()
+                            updateWakeWordButtonState()
+                            speak("सर, कृपया Google App me Offline Speech Pack डाउनलोड करें।")
+                        }
+                    }
+                    SpeechRecognizer.ERROR_CLIENT,
                     SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> {
                         isLiveMode = false
                         isWakeWordMode = false
                         updateMicButtonUI()
                         updateWakeWordButtonState()
-                        speak("सर, ऑफलाइन वॉइस पैक या इंटरनेट चेक करें।")
+                        launchVoicePopup()
                     }
-                    else -> scheduleNextListen(700)
+                    else -> {
+                        statusText.text = "Mic error ($error), retrying..."
+                        scheduleNextListen(800)
+                    }
                 }
             }
 
-            override fun onBeginningOfSpeech() {}
             override fun onRmsChanged(rmsdB: Float) {}
             override fun onBufferReceived(buffer: ByteArray?) {}
             override fun onEndOfSpeech() {
                 isListeningNow = false
                 updateMicButtonUI()
             }
-            override fun onPartialResults(partialResults: Bundle?) {}
             override fun onEvent(eventType: Int, params: Bundle?) {}
         })
     }
@@ -412,32 +444,34 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }, delayMs)
     }
 
+    private fun launchVoicePopup() {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, if (useEnglishFallback) "en-IN" else "hi-IN")
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "जार्विस को बोलें...")
+        }
+        try {
+            popupSpeechLauncher.launch(intent)
+        } catch (_: Exception) {
+            speak("वॉइस सर्विस उपलब्ध नहीं है, कृपया नीचे टाइप करें।")
+        }
+    }
+
     private fun startSilentListening() {
         if (speechRecognizer == null) {
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "hi-IN")
-            }
-            try {
-                popupSpeechLauncher.launch(intent)
-            } catch (_: Exception) {
-                speak("वॉइस सर्विस उपलब्ध नहीं है, कृपया नीचे टाइप करें।")
-            }
+            launchVoicePopup()
             return
         }
 
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "hi-IN")
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, if (useEnglishFallback) "en-IN" else "hi-IN")
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
         }
         try {
             speechRecognizer?.startListening(intent)
         } catch (_: Exception) {
-            isLiveMode = false
-            isWakeWordMode = false
-            updateMicButtonUI()
-            updateWakeWordButtonState()
+            launchVoicePopup()
         }
     }
 
@@ -542,7 +576,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 stopLiveMode("बोलना और लाइव मोड बंद कर दिया गया है, सर।")
             }
 
-            // Suggestion 5: Voice Media & Lecture Player Control
             cmd.contains("pause") || cmd.contains("play video") || cmd.contains("lecture roko") ||
             cmd.contains("lecture chalao") || cmd.contains("वीडियो रोको") || cmd.contains("वीडियो चलाओ") -> {
                 sendMediaKey(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
@@ -558,12 +591,10 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 speak("पिछला लेक्चर चला रहा हूँ, सर।")
             }
 
-            // Suggestion 4: Daily Study Timetable & Exam Countdown
             cmd.startsWith("set exam ") || cmd.contains("exam set") -> setExamCountdown(cmd)
             cmd.contains("exam countdown") || cmd.contains("kitne din") || cmd.contains("aaj ka plan") ||
             cmd.contains("study plan") || cmd.contains("आज का प्लान") || cmd.contains("परीक्षा") -> readStudyPlan()
 
-            // Wake Word Toggle
             cmd.contains("wake word") || cmd.contains("हे जार्विस चालू") -> {
                 isLiveMode = false
                 isWakeWordMode = true
@@ -572,7 +603,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 speak("हे जार्विस स्टैंडबाय मोड चालू है, सर।")
             }
 
-            // Screen Reader
             cmd.contains("read screen") || cmd.contains("screen padho") || cmd.contains("स्क्रीन पढ़ो") -> {
                 val svc = JarvisAccessibilityService.instance
                 if (svc == null) {
@@ -584,7 +614,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 }
             }
 
-            // Voice Study Notes
             cmd.startsWith("note save") || cmd.startsWith("save note") || cmd.startsWith("note likho") ||
             cmd.contains("नोट लिखो") || cmd.contains("नोट सेव") -> {
                 val noteContent = cmd
@@ -597,20 +626,15 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             cmd.contains("read notes") || cmd.contains("my notes") || cmd.contains("mere notes") ||
             cmd.contains("नोट्स सुनाओ") || cmd.contains("नोट्स पढ़ो") -> readSavedNotes()
 
-            // Focus Mode
             cmd.contains("focus mode off") || cmd.contains("फोकस मोड बंद") -> toggleFocusMode(false)
             cmd.contains("focus mode") || cmd.contains("study mode") || cmd.contains("फोकस मोड") -> toggleFocusMode(true)
 
-            // Calculator & Unit Converter
             tryCalculateOrConvert(cmd) != null -> speak(tryCalculateOrConvert(cmd)!!)
 
-            // Quiz Mode
             cmd.contains("quiz") || cmd.contains("test lo") || cmd.contains("सवाल पूछो") -> startPdfQuiz(cmd)
 
-            // Floating Bubble
             cmd.contains("floating") || cmd.contains("bubble") -> toggleFloatingBubble()
 
-            // PDF Search / Read / List / Open
             cmd.startsWith("ask ") || cmd.startsWith("search ") || cmd.contains("ढूंढो") -> handlePdfTopicSearch(cmd)
             cmd.startsWith("read ") || cmd.contains("पढ़ो") || cmd.contains("सुनाओ") -> handlePdfReadAloud(cmd)
             cmd.contains("list pdf") || cmd.contains("pdf list") || cmd.contains("book list") ||
@@ -618,7 +642,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             cmd.contains("pdf") || cmd.contains("book") || cmd.contains("बुक") ||
             cmd.contains("पीडीएफ") || cmd.contains("किताब") -> openPdfByName(extractBookQuery(cmd))
 
-            // Time & Date
             cmd.contains("time") || cmd.contains("समय") || cmd.contains("बजे") -> {
                 val now = SimpleDateFormat("hh:mm a", Locale("en", "IN")).format(Date())
                 speak("सर, अभी $now हुए हैं।")
@@ -628,7 +651,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 speak("सर, आज $today है।")
             }
 
-            // Timer & Alarm
             cmd.contains("timer") || cmd.contains("टाइमर") -> {
                 val mins = Regex("\\d+").find(cmd)?.value?.toIntOrNull() ?: 10
                 setStudyTimer(mins)
@@ -638,14 +660,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 setQuickAlarm(hour)
             }
 
-            // Torch & Volume
             cmd.contains("torch on") || cmd.contains("flashlight on") || cmd.contains("टॉर्च चालू") -> toggleTorch(true)
             cmd.contains("torch off") || cmd.contains("flashlight off") || cmd.contains("टॉर्च बंद") -> toggleTorch(false)
             cmd.contains("volume up") || cmd.contains("आवाज बढ़ाओ") -> adjustVolume(AudioManager.ADJUST_RAISE)
             cmd.contains("volume down") || cmd.contains("आवाज कम") -> adjustVolume(AudioManager.ADJUST_LOWER)
             cmd.contains("mute") || cmd.contains("साइलेंट") -> adjustVolume(AudioManager.ADJUST_MUTE)
 
-            // Wi-Fi & Bluetooth
             cmd.contains("wifi") || cmd.contains("wi-fi") || cmd.contains("वाईफाई") -> {
                 speak("वाई-फाई सेटिंग्स खोल रहा हूँ, सर।")
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -659,7 +679,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
             }
 
-            // Calls
             cmd.contains("receive call") || cmd.contains("answer call") || cmd.contains("pick up") ||
             cmd.contains("call uthao") || cmd.contains("कॉल उठाओ") || cmd.contains("फोन उठाओ") -> {
                 isLiveMode = false
@@ -681,21 +700,18 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 callContactByName(name)
             }
 
-            // Open App or PDF
             cmd.startsWith("open ") -> openAppOrPdfFallback(cmd.removePrefix("open ").trim())
             cmd.contains("खोलो") || cmd.contains("kholo") -> {
                 val target = cmd.replace("खोलो", "").replace("kholo", "").replace("karo", "").trim()
                 openAppOrPdfFallback(target)
             }
 
-            // Battery
             cmd.contains("battery") || cmd.contains("बैटरी") -> {
                 val bm = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
                 val level = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
                 speak("सर, आपके टैबलेट की बैटरी $level प्रतिशत है।")
             }
 
-            // Navigation
             cmd.contains("go home") || cmd.contains("home screen") || cmd.contains("होम") -> {
                 if (JarvisAccessibilityService.instance != null) {
                     JarvisAccessibilityService.instance?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
@@ -721,19 +737,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 }
             }
 
-            // Suggestion 2: Hybrid Advanced AI Brain (Gemini API / Local LLM Server)
             else -> askAdvancedAiBrain(cmd)
         }
     }
 
-    // --- Suggestion 2: Hybrid Advanced AI Brain ---
     private fun askAdvancedAiBrain(question: String) {
         val prefs = getSharedPreferences("jarvis_prefs", Context.MODE_PRIVATE)
         val geminiKey = prefs.getString("gemini_api_key", "") ?: ""
 
         statusText.text = "एडवांस एआई सोच रहा है..."
         Thread {
-            // 1. Try Gemini 2.5 Flash if API key is configured and internet is available
             if (geminiKey.isNotEmpty()) {
                 try {
                     val endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$geminiKey"
@@ -769,7 +782,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 } catch (_: Exception) {}
             }
 
-            // 2. Fallback to Local Offline LLM Server (e.g. Termux llama-server on 127.0.0.1:8080)
             try {
                 val localUrl = URL("http://127.0.0.1:8080/v1/chat/completions")
                 val conn = (localUrl.openConnection() as HttpURLConnection).apply {
@@ -806,9 +818,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }.start()
     }
 
-    // --- Suggestion 4: Exam Countdown & Study Plan ---
     private fun setExamCountdown(cmd: String) {
-        // Format expected: "set exam 20-12-2026 theory of machines" or "set exam 20/12/2026"
         val dateMatch = Regex("(\\d{1,2}[-/]\\d{1,2}[-/]\\d{4})").find(cmd)
         if (dateMatch == null) {
             speak("सर, तारीख इस तरह लिखें या बोलें: set exam 20-12-2026 theory of machines")
@@ -853,7 +863,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         speak("सर, $countdownPart$notesPart")
     }
 
-    // --- Suggestion 5: Media Playback Key ---
     private fun sendMediaKey(keyCode: Int) {
         val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
