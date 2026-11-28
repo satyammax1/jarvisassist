@@ -32,6 +32,7 @@ import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.telecom.TelecomManager
+import android.view.KeyEvent
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
@@ -43,9 +44,14 @@ import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import org.json.JSONArray
+import org.json.JSONObject
+import java.io.OutputStreamWriter
+import java.net.HttpURLConnection
+import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 import kotlin.random.Random
 
 class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
@@ -181,10 +187,18 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
 
         sendCmdBtn.setOnClickListener {
-            val typed = commandEditText.text.toString().trim().lowercase(Locale.getDefault())
-            if (typed.isNotEmpty()) {
+            val rawTyped = commandEditText.text.toString().trim()
+            if (rawTyped.isNotEmpty()) {
                 commandEditText.text.clear()
-                processCommand(typed)
+                // Preserve exact case if setting API key
+                if (rawTyped.lowercase(Locale.getDefault()).startsWith("set api key ")) {
+                    val key = rawTyped.substringAfter("set api key ").trim()
+                    getSharedPreferences("jarvis_prefs", Context.MODE_PRIVATE)
+                        .edit().putString("gemini_api_key", key).apply()
+                    speak("सर, एडवांस एआई की सेव हो गई है। अब आप कोई भी कठिन सवाल पूछ सकते हैं।")
+                } else {
+                    processCommand(rawTyped.lowercase(Locale.getDefault()))
+                }
             }
         }
 
@@ -339,29 +353,19 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                                 .startTone(ToneGenerator.TONE_PROP_BEEP, 150)
                         } catch (_: Exception) {}
                         val afterWake = heard
-                            .replace("hey jarvis", "")
-                            .replace("jarvis", "")
-                            .replace("हे जार्विस", "")
-                            .replace("जार्विस", "")
-                            .trim()
+                            .replace("hey jarvis", "").replace("jarvis", "")
+                            .replace("हे जार्विस", "").replace("जार्विस", "").trim()
                         isLiveMode = true
                         updateMicButtonUI()
-                        if (afterWake.length > 2) {
-                            processCommand(afterWake)
-                        } else {
-                            speak("जी सर, बोलिए।")
-                        }
+                        if (afterWake.length > 2) processCommand(afterWake) else speak("जी सर, बोलिए।")
                     } else {
                         scheduleNextListen(400)
                     }
                     return
                 }
 
-                if (heard.isNotEmpty()) {
-                    processCommand(heard)
-                } else if (isLiveMode) {
-                    scheduleNextListen(400)
-                }
+                if (heard.isNotEmpty()) processCommand(heard)
+                else if (isLiveMode) scheduleNextListen(400)
             }
 
             override fun onError(error: Int) {
@@ -538,7 +542,28 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 stopLiveMode("बोलना और लाइव मोड बंद कर दिया गया है, सर।")
             }
 
-            // Feature 1: Hey Jarvis Wake Word Voice Toggle
+            // Suggestion 5: Voice Media & Lecture Player Control
+            cmd.contains("pause") || cmd.contains("play video") || cmd.contains("lecture roko") ||
+            cmd.contains("lecture chalao") || cmd.contains("वीडियो रोको") || cmd.contains("वीडियो चलाओ") -> {
+                sendMediaKey(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
+                speak("मीडिया प्ले-पॉज़ कर दिया है, सर।")
+            }
+            cmd.contains("next track") || cmd.contains("next lecture") || cmd.contains("next song") ||
+            cmd.contains("अगला वीडियो") || cmd.contains("अगला गाना") -> {
+                sendMediaKey(KeyEvent.KEYCODE_MEDIA_NEXT)
+                speak("अगला लेक्चर चला रहा हूँ, सर।")
+            }
+            cmd.contains("previous track") || cmd.contains("previous lecture") || cmd.contains("पिछला") -> {
+                sendMediaKey(KeyEvent.KEYCODE_MEDIA_PREVIOUS)
+                speak("पिछला लेक्चर चला रहा हूँ, सर।")
+            }
+
+            // Suggestion 4: Daily Study Timetable & Exam Countdown
+            cmd.startsWith("set exam ") || cmd.contains("exam set") -> setExamCountdown(cmd)
+            cmd.contains("exam countdown") || cmd.contains("kitne din") || cmd.contains("aaj ka plan") ||
+            cmd.contains("study plan") || cmd.contains("आज का प्लान") || cmd.contains("परीक्षा") -> readStudyPlan()
+
+            // Wake Word Toggle
             cmd.contains("wake word") || cmd.contains("हे जार्विस चालू") -> {
                 isLiveMode = false
                 isWakeWordMode = true
@@ -547,22 +572,19 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 speak("हे जार्विस स्टैंडबाय मोड चालू है, सर।")
             }
 
-            // Feature 2: Screen Reader (Accessibility)
+            // Screen Reader
             cmd.contains("read screen") || cmd.contains("screen padho") || cmd.contains("स्क्रीन पढ़ो") -> {
                 val svc = JarvisAccessibilityService.instance
                 if (svc == null) {
                     speak("स्क्रीन पढ़ने के लिए कृपया पहले एक्सेसिबिलिटी में जार्विस को चालू करें।")
                 } else {
                     val screenText = svc.readCurrentScreenText()
-                    if (screenText.isEmpty()) {
-                        speak("सर, अभी स्क्रीन पर कोई पढ़ने लायक टेक्स्ट नहीं मिला।")
-                    } else {
-                        speak("स्क्रीन पर लिखा है: ${screenText.take(650)}")
-                    }
+                    if (screenText.isEmpty()) speak("सर, अभी स्क्रीन पर कोई पढ़ने लायक टेक्स्ट नहीं मिला।")
+                    else speak("स्क्रीन पर लिखा है: ${screenText.take(650)}")
                 }
             }
 
-            // Feature 3: Voice Study Notes & To-Do List
+            // Voice Study Notes
             cmd.startsWith("note save") || cmd.startsWith("save note") || cmd.startsWith("note likho") ||
             cmd.contains("नोट लिखो") || cmd.contains("नोट सेव") -> {
                 val noteContent = cmd
@@ -571,22 +593,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     .replace("नोट लिखो", "").replace(":", "").trim()
                 saveVoiceNote(noteContent)
             }
-            cmd.contains("clear notes") || cmd.contains("delete notes") || cmd.contains("नोट्स मिटाओ") -> {
-                clearVoiceNotes()
-            }
+            cmd.contains("clear notes") || cmd.contains("delete notes") || cmd.contains("नोट्स मिटाओ") -> clearVoiceNotes()
             cmd.contains("read notes") || cmd.contains("my notes") || cmd.contains("mere notes") ||
-            cmd.contains("नोट्स सुनाओ") || cmd.contains("नोट्स पढ़ो") -> {
-                readSavedNotes()
-            }
+            cmd.contains("नोट्स सुनाओ") || cmd.contains("नोट्स पढ़ो") -> readSavedNotes()
 
-            // Feature 4: Pomodoro Focus Mode (DND + 25 min timer)
+            // Focus Mode
             cmd.contains("focus mode off") || cmd.contains("फोकस मोड बंद") -> toggleFocusMode(false)
             cmd.contains("focus mode") || cmd.contains("study mode") || cmd.contains("फोकस मोड") -> toggleFocusMode(true)
 
-            // Feature 5: Offline Calculator & Unit Converter
-            tryCalculateOrConvert(cmd) != null -> {
-                speak(tryCalculateOrConvert(cmd)!!)
-            }
+            // Calculator & Unit Converter
+            tryCalculateOrConvert(cmd) != null -> speak(tryCalculateOrConvert(cmd)!!)
 
             // Quiz Mode
             cmd.contains("quiz") || cmd.contains("test lo") || cmd.contains("सवाल पूछो") -> startPdfQuiz(cmd)
@@ -704,13 +720,146 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     speak("कृपया पहले एक्सेसिबिलिटी में जार्विस को चालू करें।")
                 }
             }
-            else -> {
-                speak("सर, आपने कहा $cmd। आप 'focus mode on', '250 ka 18 percent', 'save note', या 'read screen' बोल सकते हैं।")
-            }
+
+            // Suggestion 2: Hybrid Advanced AI Brain (Gemini API / Local LLM Server)
+            else -> askAdvancedAiBrain(cmd)
         }
     }
 
-    // --- Voice Notes ---
+    // --- Suggestion 2: Hybrid Advanced AI Brain ---
+    private fun askAdvancedAiBrain(question: String) {
+        val prefs = getSharedPreferences("jarvis_prefs", Context.MODE_PRIVATE)
+        val geminiKey = prefs.getString("gemini_api_key", "") ?: ""
+
+        statusText.text = "एडवांस एआई सोच रहा है..."
+        Thread {
+            // 1. Try Gemini 2.5 Flash if API key is configured and internet is available
+            if (geminiKey.isNotEmpty()) {
+                try {
+                    val endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$geminiKey"
+                    val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                        requestMethod = "POST"
+                        setRequestProperty("Content-Type", "application/json")
+                        connectTimeout = 8000
+                        readTimeout = 12000
+                        doOutput = true
+                    }
+                    val body = JSONObject().apply {
+                        put("contents", JSONArray().put(JSONObject().apply {
+                            put("parts", JSONArray().put(JSONObject().apply {
+                                put("text", "You are J.A.R.V.I.S., a smart study assistant. Answer concisely in 2 to 4 sentences in simple Hindi/Hinglish: $question")
+                            }))
+                        }))
+                    }
+                    OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
+                    if (conn.responseCode == 200) {
+                        val respText = conn.inputStream.bufferedReader().readText()
+                        val json = JSONObject(respText)
+                        val answer = json.getJSONArray("candidates")
+                            .getJSONObject(0)
+                            .getJSONObject("content")
+                            .getJSONArray("parts")
+                            .getJSONObject(0)
+                            .getString("text")
+                            .replace("*", "")
+                            .trim()
+                        runOnUiThread { speak(answer) }
+                        return@Thread
+                    }
+                } catch (_: Exception) {}
+            }
+
+            // 2. Fallback to Local Offline LLM Server (e.g. Termux llama-server on 127.0.0.1:8080)
+            try {
+                val localUrl = URL("http://127.0.0.1:8080/v1/chat/completions")
+                val conn = (localUrl.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    setRequestProperty("Content-Type", "application/json")
+                    connectTimeout = 1500
+                    readTimeout = 15000
+                    doOutput = true
+                }
+                val body = JSONObject().apply {
+                    put("messages", JSONArray().put(JSONObject().apply {
+                        put("role", "user")
+                        put("content", "Answer briefly in simple Hindi/English: $question")
+                    }))
+                    put("max_tokens", 180)
+                }
+                OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
+                if (conn.responseCode == 200) {
+                    val respText = conn.inputStream.bufferedReader().readText()
+                    val answer = JSONObject(respText)
+                        .getJSONArray("choices")
+                        .getJSONObject(0)
+                        .getJSONObject("message")
+                        .getString("content")
+                        .trim()
+                    runOnUiThread { speak(answer) }
+                    return@Thread
+                }
+            } catch (_: Exception) {}
+
+            runOnUiThread {
+                speak("सर, एडवांस एआई जवाब के लिए नीचे बॉक्स में 'set api key आपकी_की' लिखकर सेव करें, या ऑफलाइन किताबों के लिए 'ask किताब टॉपिक' बोलें।")
+            }
+        }.start()
+    }
+
+    // --- Suggestion 4: Exam Countdown & Study Plan ---
+    private fun setExamCountdown(cmd: String) {
+        // Format expected: "set exam 20-12-2026 theory of machines" or "set exam 20/12/2026"
+        val dateMatch = Regex("(\\d{1,2}[-/]\\d{1,2}[-/]\\d{4})").find(cmd)
+        if (dateMatch == null) {
+            speak("सर, तारीख इस तरह लिखें या बोलें: set exam 20-12-2026 theory of machines")
+            return
+        }
+        val dateStr = dateMatch.value.replace("/", "-")
+        val subject = cmd.replace("set exam", "").replace(dateMatch.value, "").trim()
+            .ifEmpty { "Exam" }
+
+        getSharedPreferences("jarvis_prefs", Context.MODE_PRIVATE).edit()
+            .putString("exam_date", dateStr)
+            .putString("exam_subject", subject)
+            .apply()
+        speak("सर, $subject की परीक्षा तारीख $dateStr सेव हो गई है।")
+    }
+
+    private fun readStudyPlan() {
+        val prefs = getSharedPreferences("jarvis_prefs", Context.MODE_PRIVATE)
+        val dateStr = prefs.getString("exam_date", null)
+        val subject = prefs.getString("exam_subject", "आपकी परीक्षा") ?: "आपकी परीक्षा"
+        val notesArr = JSONArray(prefs.getString("voice_notes", "[]"))
+
+        val countdownPart = if (dateStr != null) {
+            try {
+                val sdf = SimpleDateFormat("dd-MM-yyyy", Locale.US)
+                val target = sdf.parse(dateStr)
+                val diffMs = (target?.time ?: 0L) - System.currentTimeMillis()
+                val days = TimeUnit.MILLISECONDS.toDays(diffMs).coerceAtLeast(0)
+                "$subject में $days दिन बाकी हैं। "
+            } catch (_: Exception) {
+                ""
+            }
+        } else {
+            "अभी कोई एग्जाम डेट सेव नहीं है। "
+        }
+
+        val notesPart = if (notesArr.length() > 0) {
+            "आज के लिए आपके ${notesArr.length()} नोट्स/टास्क सेव हैं।"
+        } else {
+            "आज फोकस मोड ऑन करके कम से कम 2 चैप्टर रिवाइज करें सर।"
+        }
+        speak("सर, $countdownPart$notesPart")
+    }
+
+    // --- Suggestion 5: Media Playback Key ---
+    private fun sendMediaKey(keyCode: Int) {
+        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
+        am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
+    }
+
     private fun saveVoiceNote(text: String) {
         if (text.isBlank()) {
             speak("सर, नोट में क्या लिखना है वह भी बोलें।")
@@ -743,7 +892,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         speak("सर, सभी सेव किए हुए नोट्स मिटा दिए गए हैं।")
     }
 
-    // --- Pomodoro Focus Mode (DND + 25 min timer) ---
     private fun toggleFocusMode(enable: Boolean) {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (!nm.isNotificationPolicyAccessGranted) {
@@ -768,21 +916,17 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
 
-    // --- Offline Calculator & Unit Converter ---
     private fun tryCalculateOrConvert(cmd: String): String? {
         val nums = Regex("\\d+(?:\\.\\d+)?").findAll(cmd).map { it.value.toDouble() }.toList()
         if (nums.isEmpty()) return null
 
-        // Percentage: "1250 ka 18 percent" or "18 percent of 1250"
         if (cmd.contains("percent") || cmd.contains("%") || cmd.contains("प्रतिशत")) {
             if (nums.size >= 2) {
-                val pct = if (cmd.contains("ka") || cmd.contains("का")) (nums[0] * nums[1]) / 100.0
-                else (nums[0] * nums[1]) / 100.0
+                val pct = (nums[0] * nums[1]) / 100.0
                 return "सर, इसका जवाब ${formatNum(pct)} होगा।"
             }
         }
 
-        // Unit Conversions
         val v = nums[0]
         if (cmd.contains("celsius") && cmd.contains("fahrenheit")) {
             return if (cmd.indexOf("celsius") < cmd.indexOf("fahrenheit")) {
@@ -805,7 +949,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
         }
 
-        // Basic Arithmetic (+, -, *, /)
         if (nums.size >= 2) {
             val a = nums[0]
             val b = nums[1]
